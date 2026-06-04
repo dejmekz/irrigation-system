@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}MQTT Log{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-journal-text me-2"></i>MQTT Log</h4>
+  <div class="d-flex gap-2 align-items-center">
+    <div class="form-check form-switch mb-0">
+      <input class="form-check-input" type="checkbox" id="auto-scroll" checked>
+      <label class="form-check-label" for="auto-scroll">Auto-scroll</label>
+    </div>
+    <button class="btn btn-sm btn-outline-secondary" onclick="clearDisplay()">
+      <i class="bi bi-eraser me-1"></i>Clear display
+    </button>
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">Filter</button>
+      <ul class="dropdown-menu">
+        <li><a class="dropdown-item" href="#" onclick="setFilter('all')">All</a></li>
+        <li><a class="dropdown-item" href="#" onclick="setFilter('in')">Incoming only</a></li>
+        <li><a class="dropdown-item" href="#" onclick="setFilter('out')">Outgoing only</a></li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body p-0">
+    <div id="log-container" style="height:70vh; overflow-y:auto; font-family:monospace; font-size:0.82rem;">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-dark sticky-top">
+          <tr>
+            <th style="width:160px">Time</th>
+            <th style="width:60px">Dir</th>
+            <th>Topic</th>
+            <th>Payload</th>
+          </tr>
+        </thead>
+        <tbody id="log-body">
+          {% for entry in logs %}
+          <tr class="log-row dir-{{ entry.direction }}">
+            <td class="text-muted">{{ entry.ts }}</td>
+            <td>
+              {% if entry.direction == 'in' %}
+              <span class="badge bg-primary">IN</span>
+              {% else %}
+              <span class="badge bg-success">OUT</span>
+              {% endif %}
+            </td>
+            <td>{{ entry.topic }}</td>
+            <td>{{ entry.payload }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentFilter = 'all';
+
+socket.on('log_entry', entry => {
+  const tbody = document.getElementById('log-body');
+  const row = document.createElement('tr');
+  row.className = `log-row dir-${entry.direction}`;
+  row.innerHTML = `
+    <td class="text-muted">${new Date().toLocaleTimeString()}</td>
+    <td><span class="badge ${entry.direction === 'in' ? 'bg-primary' : 'bg-success'}">${entry.direction.toUpperCase()}</span></td>
+    <td>${escHtml(entry.topic)}</td>
+    <td>${escHtml(entry.payload)}</td>
+  `;
+  applyFilter(row);
+  tbody.appendChild(row);
+
+  // Keep max 500 rows in DOM
+  while (tbody.rows.length > 500) tbody.deleteRow(0);
+
+  if (document.getElementById('auto-scroll').checked) {
+    const c = document.getElementById('log-container');
+    c.scrollTop = c.scrollHeight;
+  }
+});
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.log-row').forEach(applyFilter);
+}
+
+function applyFilter(row) {
+  if (currentFilter === 'all') {
+    row.style.display = '';
+  } else {
+    row.style.display = row.classList.contains(`dir-${currentFilter}`) ? '' : 'none';
+  }
+}
+
+function clearDisplay() {
+  document.getElementById('log-body').innerHTML = '';
+}
+
+// Scroll to bottom on load
+document.addEventListener('DOMContentLoaded', () => {
+  const c = document.getElementById('log-container');
+  c.scrollTop = c.scrollHeight;
+});
+</script>
+{% endblock %}

@@ -1,0 +1,17 @@
+mqtt:
+  host: localhost
+  port: 1883
+  username: ""   # override with MQTT_USER env var
+  password: ""   # override with MQTT_PASS env var
+  client_id: irrigation_pi
+
+# 4 boxes x 3 valves = 12 outputs + pump
+# Mapped across two PCF8574 I2C expanders on ESP32
+system:
+  boxes: 4
+  valves_per_box: 3
+
+web:
+  host: "0.0.0.0"
+  port: 5000
+  secret_key: ""  # override with SECRET_KEY env var

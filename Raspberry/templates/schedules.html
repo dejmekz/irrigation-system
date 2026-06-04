@@ -1,0 +1,195 @@
+{% extends "base.html" %}
+{% block title %}Schedules{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-clock me-2"></i>Schedules</h4>
+  <button class="btn btn-primary" onclick="openScheduleEditor()">
+    <i class="bi bi-plus-lg me-1"></i>New Schedule
+  </button>
+</div>
+
+{% if not scripts %}
+<div class="alert alert-info">
+  <i class="bi bi-info-circle me-2"></i>Create at least one script before adding a schedule.
+  <a href="/scripts" class="alert-link ms-1">Go to Scripts</a>
+</div>
+{% endif %}
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Name</th>
+          <th>Script</th>
+          <th>Schedule (cron)</th>
+          <th>Enabled</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in schedules %}
+        <tr id="sched-row-{{ s.id }}">
+          <td class="fw-semibold">{{ s.name }}</td>
+          <td><span class="badge bg-secondary">{{ s.script_name }}</span></td>
+          <td><code>{{ s.cron }}</code></td>
+          <td>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" role="switch"
+                     {% if s.enabled %}checked{% endif %}
+                     onchange="toggleSchedule({{ s.id }}, this.checked)">
+            </div>
+          </td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-outline-primary me-1" onclick="editSchedule({{ s.id }})">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteSchedule({{ s.id }})">
+              <i class="bi bi-trash"></i>
+            </button>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5" class="text-center text-muted py-4">No schedules yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Schedule Editor Modal -->
+<div class="modal fade" id="schedModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="sched-title">New Schedule</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="sched-id">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Name</label>
+          <input type="text" class="form-control" id="sched-name" placeholder="e.g. Daily Morning">
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Script</label>
+          <select class="form-select" id="sched-script">
+            {% for s in scripts %}
+            <option value="{{ s.id }}">{{ s.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Time of Day</label>
+          <input type="time" class="form-control" id="sched-time" value="06:00">
+        </div>
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Days of Week</label>
+          <div class="d-flex gap-2 flex-wrap" id="sched-days">
+            {% for day, label in [('mon','Mon'),('tue','Tue'),('wed','Wed'),('thu','Thu'),('fri','Fri'),('sat','Sat'),('sun','Sun')] %}
+            <div class="form-check form-check-inline">
+              <input class="form-check-input day-check" type="checkbox" id="day-{{ day }}" value="{{ day }}" checked>
+              <label class="form-check-label" for="day-{{ day }}">{{ label }}</label>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="mb-1">
+          <label class="form-label fw-semibold">Cron Expression <small class="text-muted fw-normal">(auto-generated or enter manually)</small></label>
+          <input type="text" class="form-control font-monospace" id="sched-cron" placeholder="min hour day month dow">
+          <div class="form-text">Format: minute hour day month day_of_week</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSchedule()"><i class="bi bi-save me-1"></i>Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let schedModal;
+
+document.addEventListener('DOMContentLoaded', () => {
+  schedModal = new bootstrap.Modal(document.getElementById('schedModal'));
+
+  // Auto-generate cron when time/days change
+  document.getElementById('sched-time').addEventListener('change', updateCron);
+  document.querySelectorAll('.day-check').forEach(c => c.addEventListener('change', updateCron));
+  updateCron();
+});
+
+function updateCron() {
+  const time = document.getElementById('sched-time').value;
+  const [hour, minute] = time.split(':');
+  const checked = Array.from(document.querySelectorAll('.day-check:checked')).map(c => c.value);
+  const dow = checked.length === 7 || checked.length === 0 ? '*' : checked.join(',');
+  document.getElementById('sched-cron').value = `${minute} ${hour} * * ${dow}`;
+}
+
+function openScheduleEditor(id, name, scriptId, cron, enabled) {
+  document.getElementById('sched-id').value = id || '';
+  document.getElementById('sched-title').textContent = id ? 'Edit Schedule' : 'New Schedule';
+  document.getElementById('sched-name').value = name || '';
+  if (scriptId) document.getElementById('sched-script').value = scriptId;
+  if (cron) {
+    document.getElementById('sched-cron').value = cron;
+    // Parse cron to fill time/days
+    const parts = cron.split(' ');
+    if (parts.length === 5) {
+      const h = parts[1].padStart(2, '0');
+      const m = parts[0].padStart(2, '0');
+      document.getElementById('sched-time').value = `${h}:${m}`;
+      const days = parts[4] === '*' ? ['mon','tue','wed','thu','fri','sat','sun'] : parts[4].split(',');
+      document.querySelectorAll('.day-check').forEach(c => {
+        c.checked = days.includes(c.value);
+      });
+    }
+  } else {
+    updateCron();
+  }
+  schedModal.show();
+}
+
+function editSchedule(id) {
+  fetch('/api/schedules').then(r => r.json()).then(list => {
+    const s = list.find(x => x.id === id);
+    if (s) openScheduleEditor(s.id, s.name, s.script_id, s.cron, s.enabled);
+  });
+}
+
+function saveSchedule() {
+  const id = document.getElementById('sched-id').value;
+  const name = document.getElementById('sched-name').value.trim();
+  const script_id = parseInt(document.getElementById('sched-script').value);
+  const cron = document.getElementById('sched-cron').value.trim();
+  if (!name || !cron) { alert('Fill in name and schedule.'); return; }
+  const url = id ? `/api/schedules/${id}` : '/api/schedules';
+  const method = id ? 'PUT' : 'POST';
+  fetch(url, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, script_id, cron, enabled: true}),
+  }).then(() => { schedModal.hide(); location.reload(); });
+}
+
+function toggleSchedule(id, enabled) {
+  fetch('/api/schedules').then(r => r.json()).then(list => {
+    const s = list.find(x => x.id === id);
+    if (!s) return;
+    fetch(`/api/schedules/${id}`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: s.name, script_id: s.script_id, cron: s.cron, enabled}),
+    });
+  });
+}
+
+function deleteSchedule(id) {
+  if (!confirm('Delete this schedule?')) return;
+  fetch(`/api/schedules/${id}`, {method: 'DELETE'}).then(() => location.reload());
+}
+</script>
+{% endblock %}

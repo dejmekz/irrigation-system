@@ -1,0 +1,375 @@
+{% extends "base.html" %}
+{% block title %}Scripts{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-list-ol me-2"></i>Scripts</h4>
+  <button class="btn btn-primary" onclick="openEditor()">
+    <i class="bi bi-plus-lg me-1"></i>New Script
+  </button>
+</div>
+
+<div id="script-running-alert" class="alert alert-warning d-none">
+  <i class="bi bi-play-fill me-2"></i>
+  Running: <strong id="script-running-name"></strong>
+  <span id="script-running-progress"></span>
+  <button class="btn btn-sm btn-danger ms-3" onclick="stopScript()">
+    <i class="bi bi-stop-fill me-1"></i>Stop
+  </button>
+</div>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Name</th>
+          <th>Steps</th>
+          <th>Created</th>
+          <th class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="scripts-table">
+        {% for s in scripts %}
+        <tr id="script-row-{{ s.id }}">
+          <td class="fw-semibold">{{ s.name }}</td>
+          <td><span class="badge bg-secondary">{{ s.steps | fromjson | length }} steps</span></td>
+          <td class="text-muted small">{{ s.created_at }}</td>
+          <td class="text-end">
+            <button class="btn btn-sm btn-success me-1" onclick="runScript({{ s.id }}, '{{ s.name }}')">
+              <i class="bi bi-play-fill"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-primary me-1" onclick="editScript({{ s.id }})">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteScript({{ s.id }})">
+              <i class="bi bi-trash"></i>
+            </button>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-center text-muted py-4">No scripts yet. Create one to get started.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Script Editor Modal -->
+<div class="modal fade" id="editorModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editor-title">New Script</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-id">
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Script Name</label>
+          <input type="text" class="form-control" id="script-name" placeholder="e.g. Morning Irrigation">
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label fw-semibold">Pump</label>
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <select class="form-select" id="pump-box" style="max-width:140px">
+              <option value="">None</option>
+              <option value="1">Box 1</option>
+              <option value="2">Box 2</option>
+              <option value="3">Box 3</option>
+              <option value="4">Box 4</option>
+            </select>
+            <div class="input-group" style="max-width:180px">
+              <span class="input-group-text">Delay</span>
+              <input type="number" class="form-control" id="pump-delay" value="0" min="0">
+              <select class="form-select" id="pump-delay-unit" style="max-width:60px">
+                <option value="sec">sec</option>
+                <option value="min">min</option>
+              </select>
+            </div>
+          </div>
+          <small class="text-muted">Pump turns ON before the script and OFF when it finishes. Delay is the wait after pump starts.</small>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <label class="form-label fw-semibold mb-0">Steps</label>
+          <button class="btn btn-sm btn-outline-primary" onclick="addStep()">
+            <i class="bi bi-plus-lg me-1"></i>Add Step
+          </button>
+        </div>
+
+        <div id="steps-list" class="steps-container">
+          <p class="text-muted text-center py-3" id="no-steps-msg">No steps yet. Click "Add Step" to begin.</p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary" onclick="saveScript()"><i class="bi bi-save me-1"></i>Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Step template -->
+<template id="step-tpl">
+  <div class="step-row card mb-2">
+    <div class="card-body p-2">
+      <div class="row g-2 align-items-center">
+        <div class="col-auto step-handle text-muted"><i class="bi bi-grip-vertical"></i></div>
+        <div class="col">
+          <select class="form-select form-select-sm step-action" onchange="onActionChange(this)">
+            <option value="valve_on">Valve ON</option>
+            <option value="valve_off">Valve OFF</option>
+            <option value="wait">Wait</option>
+            <option value="parallel_group">Parallel Group</option>
+          </select>
+        </div>
+        <div class="col step-box-col">
+          <select class="form-select form-select-sm step-box">
+            <option value="1">Box 1</option>
+            <option value="2">Box 2</option>
+            <option value="3">Box 3</option>
+            <option value="4">Box 4</option>
+          </select>
+        </div>
+        <div class="col step-valve-col">
+          <select class="form-select form-select-sm step-valve">
+            <option value="1">Valve 1</option>
+            <option value="2">Valve 2</option>
+            <option value="3">Valve 3</option>
+          </select>
+        </div>
+        <div class="col">
+          <div class="input-group input-group-sm">
+            <input type="number" class="form-control step-duration" value="0" min="0" placeholder="0">
+            <select class="form-select form-select-sm step-duration-unit" style="max-width:60px">
+              <option value="sec">sec</option>
+              <option value="min">min</option>
+            </select>
+          </div>
+        </div>
+        <div class="col-auto">
+          <button class="btn btn-sm btn-outline-danger" onclick="removeStep(this)"><i class="bi bi-x-lg"></i></button>
+        </div>
+      </div>
+      <!-- Parallel group sub-actions (hidden unless action = parallel_group) -->
+      <div class="step-parallel-group d-none mt-2 ps-3 border-start border-2 border-primary">
+        <div class="parallel-actions-list mb-2"></div>
+        <button class="btn btn-sm btn-outline-secondary" type="button" onclick="addParallelAction(this)">
+          <i class="bi bi-plus-lg me-1"></i>Add action
+        </button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<!-- Sub-action template (used inside parallel groups) -->
+<template id="sub-action-tpl">
+  <div class="parallel-action-row d-flex flex-wrap gap-2 align-items-center mb-1">
+    <select class="form-select form-select-sm sub-action" style="max-width:130px">
+      <option value="valve_on">Valve ON</option>
+      <option value="valve_off">Valve OFF</option>
+    </select>
+    <select class="form-select form-select-sm sub-box" style="max-width:90px">
+      <option value="1">Box 1</option>
+      <option value="2">Box 2</option>
+      <option value="3">Box 3</option>
+      <option value="4">Box 4</option>
+    </select>
+    <select class="form-select form-select-sm sub-valve" style="max-width:90px">
+      <option value="1">Valve 1</option>
+      <option value="2">Valve 2</option>
+      <option value="3">Valve 3</option>
+    </select>
+    <button class="btn btn-sm btn-outline-danger" type="button" onclick="removeParallelAction(this)">
+      <i class="bi bi-x-lg"></i>
+    </button>
+  </div>
+</template>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let editorModal;
+
+document.addEventListener('DOMContentLoaded', () => {
+  editorModal = new bootstrap.Modal(document.getElementById('editorModal'));
+});
+
+socket.on('script_status', data => {
+  const alert = document.getElementById('script-running-alert');
+  if (data.running) {
+    alert.classList.remove('d-none');
+    document.getElementById('script-running-name').textContent = data.running;
+    document.getElementById('script-running-progress').textContent =
+      data.total ? ` — step ${data.step} of ${data.total}` : '';
+  } else {
+    alert.classList.add('d-none');
+  }
+});
+
+function openEditor(id, name, steps, pumpBox, pumpDelay) {
+  document.getElementById('edit-id').value = id || '';
+  document.getElementById('editor-title').textContent = id ? 'Edit Script' : 'New Script';
+  document.getElementById('script-name').value = name || '';
+  document.getElementById('pump-box').value = pumpBox || '';
+  const pd = pumpDelay || 0;
+  if (pd >= 60 && pd % 60 === 0) {
+    document.getElementById('pump-delay').value = pd / 60;
+    document.getElementById('pump-delay-unit').value = 'min';
+  } else {
+    document.getElementById('pump-delay').value = pd;
+    document.getElementById('pump-delay-unit').value = 'sec';
+  }
+  document.getElementById('steps-list').innerHTML =
+    '<p class="text-muted text-center py-3" id="no-steps-msg">No steps yet.</p>';
+  if (steps && steps.length) {
+    steps.forEach(s => addStep(s));
+  }
+  editorModal.show();
+}
+
+function editScript(id) {
+  fetch(`/api/scripts`).then(r => r.json()).then(list => {
+    const s = list.find(x => x.id === id);
+    if (s) openEditor(s.id, s.name, JSON.parse(s.steps), s.pump_box, s.pump_delay);
+  });
+}
+
+function addStep(data) {
+  const noMsg = document.getElementById('no-steps-msg');
+  if (noMsg) noMsg.remove();
+
+  const tpl = document.getElementById('step-tpl');
+  const clone = tpl.content.cloneNode(true);
+  const row = clone.querySelector('.step-row');
+
+  if (data) {
+    row.querySelector('.step-action').value = data.action;
+    onActionChange(row.querySelector('.step-action'));
+    if (data.box) row.querySelector('.step-box').value = data.box;
+    if (data.valve) row.querySelector('.step-valve').value = data.valve;
+    const d = data.duration || 0;
+    if (d >= 60 && d % 60 === 0) {
+      row.querySelector('.step-duration').value = d / 60;
+      row.querySelector('.step-duration-unit').value = 'min';
+    } else {
+      row.querySelector('.step-duration').value = d;
+    }
+  }
+
+  document.getElementById('steps-list').appendChild(clone);
+
+  // Populate parallel sub-actions after the row is in the DOM
+  if (data && data.action === 'parallel_group' && data.actions) {
+    const addBtn = document.getElementById('steps-list').lastElementChild
+      .querySelector('.step-parallel-group button');
+    data.actions.forEach(a => addParallelAction(addBtn, a));
+  }
+}
+
+function onActionChange(sel) {
+  const row = sel.closest('.step-row');
+  const action = sel.value;
+  const isValve = action === 'valve_on' || action === 'valve_off';
+  const isGroup = action === 'parallel_group';
+
+  row.querySelector('.step-box-col').style.display = (action === 'wait' || isGroup) ? 'none' : '';
+  row.querySelector('.step-valve-col').style.display = isValve ? '' : 'none';
+  row.querySelector('.step-parallel-group').classList.toggle('d-none', !isGroup);
+}
+
+function addParallelAction(btn, data) {
+  const list = btn.closest('.step-parallel-group').querySelector('.parallel-actions-list');
+  const tpl = document.getElementById('sub-action-tpl');
+  const clone = tpl.content.cloneNode(true);
+  const arow = clone.querySelector('.parallel-action-row');
+
+  if (data) {
+    arow.querySelector('.sub-action').value = data.action;
+    onSubActionChange(arow.querySelector('.sub-action'));
+    if (data.box) arow.querySelector('.sub-box').value = data.box;
+    if (data.valve) arow.querySelector('.sub-valve').value = data.valve;
+  }
+
+  list.appendChild(clone);
+}
+
+function onSubActionChange(sel) {
+  const row = sel.closest('.parallel-action-row');
+  const isValve = sel.value === 'valve_on' || sel.value === 'valve_off';
+  row.querySelector('.sub-valve').style.display = isValve ? '' : 'none';
+}
+
+function removeParallelAction(btn) {
+  btn.closest('.parallel-action-row').remove();
+}
+
+function removeStep(btn) {
+  btn.closest('.step-row').remove();
+}
+
+function collectSteps() {
+  return Array.from(document.querySelectorAll('#steps-list .step-row')).map(row => {
+    const action = row.querySelector('.step-action').value;
+    const durationRaw = parseInt(row.querySelector('.step-duration').value) || 0;
+    const durationUnit = row.querySelector('.step-duration-unit').value;
+    const step = {
+      action,
+      duration: durationUnit === 'min' ? durationRaw * 60 : durationRaw,
+    };
+    if (action === 'parallel_group') {
+      step.actions = Array.from(row.querySelectorAll('.parallel-action-row')).map(arow => {
+        const subAction = arow.querySelector('.sub-action').value;
+        const sub = { action: subAction, box: parseInt(arow.querySelector('.sub-box').value) };
+        if (subAction === 'valve_on' || subAction === 'valve_off') {
+          sub.valve = parseInt(arow.querySelector('.sub-valve').value);
+        }
+        return sub;
+      });
+    } else {
+      if (action !== 'wait') step.box = parseInt(row.querySelector('.step-box').value);
+      if (action === 'valve_on' || action === 'valve_off') step.valve = parseInt(row.querySelector('.step-valve').value);
+    }
+    return step;
+  });
+}
+
+function saveScript() {
+  const id = document.getElementById('edit-id').value;
+  const name = document.getElementById('script-name').value.trim();
+  if (!name) { alert('Enter a script name.'); return; }
+  const steps = collectSteps();
+  const pumpBoxVal = document.getElementById('pump-box').value;
+  const pumpDelayRaw = parseInt(document.getElementById('pump-delay').value) || 0;
+  const pumpDelayUnit = document.getElementById('pump-delay-unit').value;
+  const url = id ? `/api/scripts/${id}` : '/api/scripts';
+  const method = id ? 'PUT' : 'POST';
+  fetch(url, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name,
+      steps,
+      pump_box: pumpBoxVal ? parseInt(pumpBoxVal) : null,
+      pump_delay: pumpDelayUnit === 'min' ? pumpDelayRaw * 60 : pumpDelayRaw,
+    }),
+  }).then(() => { editorModal.hide(); location.reload(); });
+}
+
+function deleteScript(id) {
+  if (!confirm('Delete this script?')) return;
+  fetch(`/api/scripts/${id}`, {method: 'DELETE'}).then(() => location.reload());
+}
+
+function runScript(id, name) {
+  fetch(`/api/scripts/${id}/run`, {method: 'POST'});
+}
+
+function stopScript() {
+  fetch('/api/scripts/stop', {method: 'POST'});
+}
+</script>
+{% endblock %}

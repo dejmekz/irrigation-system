@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h4 class="mb-0"><i class="bi bi-grid-3x3-gap me-2"></i>Dashboard</h4>
+  <div class="d-flex gap-2 align-items-center">
+    <button class="btn btn-sm pump-btn btn-outline-secondary" id="pump-btn" onclick="togglePump()" data-state="off">
+      <i class="bi bi-arrow-up-circle me-1"></i>Pump
+    </button>
+    <button class="btn btn-danger" onclick="emergencyStop()">
+      <i class="bi bi-stop-circle-fill me-1"></i>Stop All
+    </button>
+  </div>
+</div>
+
+<div class="row g-3">
+  {% for box in boxes %}
+  <div class="col-12 col-md-6 col-xl-3">
+    <div class="card h-100 shadow-sm" id="box-card-{{ box }}">
+      <div class="card-header">
+        <span class="fw-semibold"><i class="bi bi-box-seam me-2"></i>Box {{ box }}</span>
+      </div>
+      <div class="card-body">
+        <div class="d-flex gap-2 flex-wrap justify-content-center">
+          {% for valve in valves %}
+          <button
+            class="btn valve-btn"
+            id="valve-btn-{{ box }}-{{ valve }}"
+            onclick="toggleValve({{ box }}, {{ valve }})"
+            data-box="{{ box }}"
+            data-valve="{{ valve }}"
+            data-state="off">
+            <i class="bi bi-water"></i>
+            <div class="small mt-1">V{{ valve }}</div>
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const initialState = {{ state | tojson }};
+applyState(initialState);
+
+function applyState(state) {
+  // Pump (single, global)
+  const pumpBtn = document.getElementById('pump-btn');
+  if (pumpBtn) {
+    const on = state.pump === 'ON';
+    pumpBtn.dataset.state = on ? 'on' : 'off';
+    pumpBtn.className = 'btn btn-sm pump-btn ' + (on ? 'btn-success' : 'btn-outline-secondary');
+  }
+  // Valves per box
+  for (const [box, data] of Object.entries(state)) {
+    if (!data || typeof data !== 'object' || !data.valves) continue;
+    for (const [valve, vstate] of Object.entries(data.valves)) {
+      const btn = document.getElementById(`valve-btn-${box}-${valve}`);
+      if (btn) {
+        const on = vstate === 'ON';
+        btn.dataset.state = on ? 'on' : 'off';
+        btn.className = 'btn valve-btn ' + (on ? 'btn-primary' : 'btn-outline-secondary');
+      }
+    }
+  }
+}
+
+socket.on('state_update', applyState);
+
+function toggleValve(box, valve) {
+  const btn = document.getElementById(`valve-btn-${box}-${valve}`);
+  const newState = btn.dataset.state !== 'on';
+  fetch('/api/valve', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({box, valve, state: newState}),
+  });
+}
+
+function togglePump() {
+  const btn = document.getElementById('pump-btn');
+  const newState = btn.dataset.state !== 'on';
+  fetch('/api/pump', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({state: newState}),
+  });
+}
+
+function emergencyStop() {
+  fetch('/api/all_off', {method: 'POST'}).then(() => {
+    // UI will update when state messages arrive; force optimistic clear
+    document.querySelectorAll('.valve-btn').forEach(b => {
+      b.dataset.state = 'off';
+      b.className = 'btn valve-btn btn-outline-secondary';
+    });
+    document.querySelectorAll('.pump-btn').forEach(b => {
+      b.dataset.state = 'off';
+      b.className = 'btn btn-sm pump-btn btn-outline-secondary';
+    });
+  });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Irrigation Control Service
+After=network.target mosquitto.service
+
+[Service]
+Type=simple
+User=openhabian
+WorkingDirectory=/home/openhabian/irrigation
+ExecStart=/home/openhabian/irrigation/venv/bin/python run.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
