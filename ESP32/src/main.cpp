@@ -44,7 +44,7 @@ bool pcfFlush(int idx)
     Wire.write(pcfState[idx]);
     if (Wire.endTransmission() != 0)
     {
-        Serial.printf("PCF[%d] I2C error\n", idx);
+        log_e("PCF[%d] I2C error", idx);
         return false;
     }
     return true;
@@ -96,7 +96,7 @@ void allOff()
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), " allOff I2C error!  ");
         pcfErrUntil = millis() + 5000;
-        Serial.println("allOff: PCF I2C write failed — relays may still be active!");
+        log_e("allOff: PCF I2C write failed — relays may still be active!");
     }
     memset(valveOn, 0, sizeof(valveOn));
     pumpOn = false;
@@ -286,18 +286,21 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
     }
     else if (strcmp(topic, "irrigation/cmd/ota_update") == 0)
     {
+        log_i("OTA check triggered");
         lcdLine(0, "  OTA: checking...  ");
         lcdLine(1, "");
         lcdLine(2, "");
         lcdLine(3, "");
         if (fota.execHTTPcheck())
         {
+            log_i("OTA update found, flashing...");
             allOff();
             lcdLine(0, "  OTA: updating...  ");
             lcdLine(1, "  Do not power off  ");
             lcdLine(2, "");
             lcdLine(3, "");
             fota.execOTA(); // reboots on success; falls through only on failure
+            log_e("OTA update failed");
             lcdLine(0, "  OTA: failed!      ");
             lcdLine(1, "  Restarting...     ");
             delay(3000);
@@ -305,6 +308,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
         }
         else
         {
+            log_i("OTA: already up to date");
             lcdLine(1, "  Already latest    ");
             delay(2000);
             lcdDirty = true;
@@ -345,7 +349,11 @@ bool mqttReconnect()
 {
     if (!mqtt.connect(MQTT_CLIENT_ID, MQTT_USER, MQTT_PASSWORD,
                       MQTT_STATUS_TOPIC, 0, true, "offline"))
+    {
+        log_e("MQTT connect failed");
         return false;
+    }
+    log_i("MQTT connected");
     mqtt.publish(MQTT_STATUS_TOPIC, "online", true);
     mqtt.subscribe("irrigation/box/+/valve/+/set");
     mqtt.subscribe("irrigation/pump/set");
@@ -381,7 +389,7 @@ void setup()
 
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(I2C_CLOCK_HZ);
-    fota.checkURL = OTA_MANIFEST_URL;
+    fota.setManifestURL(OTA_MANIFEST_URL);
 
     // LCD
     lcd.init();
@@ -395,8 +403,13 @@ void setup()
     rtcOk = rtc.begin();
     if (!rtcOk)
     {
+        log_e("RTC not found");
         lcdLine(2, "  RTC not found!    ");
         delay(2000);
+    }
+    else
+    {
+        log_i("RTC ok");
     }
 
     // PCF8574A — write initial state (all relays OFF) and verify presence
@@ -406,10 +419,15 @@ void setup()
         Wire.write(pcfState[i]);
         if (Wire.endTransmission() != 0)
         {
+            log_e("PCF[%d] not found", i);
             char msg[LCD_COLS + 1];
             snprintf(msg, sizeof(msg), "  PCF[%d] not found! ", i);
             lcdLine(2, msg);
             delay(2000);
+        }
+        else
+        {
+            log_i("PCF[%d] ok", i);
         }
     }
 
@@ -462,7 +480,7 @@ void loop()
         {
             // Connection just restored
             lcdLine(1, " WiFi connected ");
-            Serial.println("WiFi: connected");
+            log_i("WiFi connected");
             wifiWasConnected = true;
             wifiStableAt = millis();
         }
@@ -489,7 +507,7 @@ void loop()
             snprintf(pcfErrMsg, sizeof(pcfErrMsg), " WiFi lost! Stopped ");
             pcfErrUntil = millis() + 5000;
             wifiLostAt = millis(); // restart timer so repeated checks don't re-trigger
-            Serial.println("Critical: WiFi connection lost while watering! All valves and pump stopped as a safety measure.");
+            log_e("WiFi lost while watering — all outputs stopped");
         }
 
         // --- 2. Connection Retry ---
@@ -497,7 +515,7 @@ void loop()
         if (millis() - lastWifiRetry > WIFI_RETRY_INTERVAL_MS)
         {
             lastWifiRetry = millis();
-            Serial.println("WiFi: Connection lost, attempting reconnect...");
+            log_w("WiFi lost, reconnecting...");
             WiFi.begin(WIFI_SSID, WIFI_PASS);
         }
     }
@@ -512,7 +530,7 @@ void loop()
         if (millis() - lastMqttRetry > MQTT_RETRY_INTERVAL_MS)
         {
             lastMqttRetry = millis();
-            Serial.println("MQTT: Connection lost, attempting reconnect...");
+            log_w("MQTT lost, reconnecting...");
             mqttReconnect();
         }
     }
