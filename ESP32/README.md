@@ -25,8 +25,50 @@ Relay boards are **active-LOW** (`RELAY_ACTIVE_LOW true` in `config.h`).
 | `irrigation/pump/set` | ← subscribe | `ON` / `OFF` | Command from Pi |
 | `irrigation/pump/state` | → publish | `ON` / `OFF` | Retained state |
 | `irrigation/cmd/stop_all` | ← subscribe | any | Emergency stop |
+| `irrigation/cmd/ota_update` | ← subscribe | any | Trigger OTA firmware update |
 | `irrigation/status` | → publish | `online` / `offline` | LWT |
 | `irrigation/heartbeat` | → publish | JSON | Every 5 minutes |
+
+## OTA Firmware Updates
+
+Firmware can be updated over WiFi without a USB connection. The ESP32 checks the Pi's manifest and flashes the new binary when told to.
+
+### How it works
+
+1. The Pi serves `firmware/manifest.json` (version number) and `firmware/irrigation.bin`.
+2. On `irrigation/cmd/ota_update`, the ESP32 compares its `FIRMWARE_VERSION` against the manifest. If the manifest version is higher, it downloads and flashes the binary, then reboots.
+
+### Deploy workflow
+
+```bash
+# 1. Bump FIRMWARE_VERSION in src/config.h (e.g. 1 → 2)
+# 2. Build
+cd ESP32 && pio run
+
+# 3. Upload binary to Pi (auto-increments manifest version)
+curl -F "firmware=@.pio/build/esp32c3/firmware.bin" \
+     http://raspi4server.local:5000/firmware/upload
+
+# 4. Trigger the update
+curl -X POST http://raspi4server.local:5000/firmware/trigger
+# or via MQTT directly:
+mosquitto_pub -h raspi4server.local -t irrigation/cmd/ota_update -m trigger
+```
+
+During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP32 reboots automatically on success. If the update fails it reboots back to the existing firmware.
+
+### Pi endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/firmware/manifest.json` | Current version manifest read by ESP32 |
+| `GET` | `/firmware/irrigation.bin` | Binary served to ESP32 during OTA |
+| `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`), increments manifest version |
+| `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
+
+### Version rule
+
+`FIRMWARE_VERSION` in `config.h` **must be bumped** before each build. The upload endpoint increments the manifest version to match. If both numbers are equal, no update is triggered.
 
 ## Safety Features
 
@@ -88,8 +130,12 @@ Key constants — edit here rather than in code:
 | Constant | Default | Description |
 |---|---|---|
 | `RELAY_ACTIVE_LOW` | `true` | Relay board polarity |
+| `I2C_CLOCK_HZ` | 100 000 | I2C bus speed — lower for long/noisy cables (try 50 000) |
+| `LCD_REINIT_INTERVAL_MS` | 60 000 | Period between full LCD reinit (noise recovery) |
 | `WIFI_RETRY_INTERVAL_MS` | 10 000 | Interval between WiFi reconnect attempts |
 | `WIFI_ACTIVE_SAFETY_MS` | 30 000 | Max WiFi-loss duration before emergency stop |
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
+| `FIRMWARE_VERSION` | 1 | Bump before every OTA release build |
+| `OTA_MANIFEST_URL` | `http://raspi4server.local:5000/firmware/manifest.json` | Pi manifest URL |

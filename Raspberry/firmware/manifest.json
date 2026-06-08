@@ -1,0 +1,7 @@
+{
+  "type": "irrigation-esp32c3",
+  "version": 1,
+  "host": "raspi4server.local",
+  "port": 5000,
+  "bin": "/firmware/irrigation.bin"
+}

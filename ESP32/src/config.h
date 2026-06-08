@@ -38,6 +38,13 @@
 #define NUM_BOXES        4
 #define VALVES_PER_BOX   3
 
+// ---- OTA ----
+// Bump FIRMWARE_VERSION before every release build, then upload the new .bin to the Pi.
+// The Pi manifest version must match for the ESP32 to recognise it as an update.
+#define FIRMWARE_VERSION  1
+#define FIRMWARE_TYPE     "irrigation-esp32c3"
+#define OTA_MANIFEST_URL  "http://raspi4server.local:5000/firmware/manifest.json"
+
 // ---- WiFi reconnect ----
 #define WIFI_RETRY_INTERVAL_MS   10000   // wait 10 s between reconnect attempts
 

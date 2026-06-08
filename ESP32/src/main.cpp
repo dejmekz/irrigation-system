@@ -4,6 +4,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <RTClib.h>
+#include <esp32fota.h>
 #include "config.h"
 #include <esp_task_wdt.h>
 
@@ -31,6 +32,7 @@ WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 RTC_DS3231 rtc;
+esp32FOTA fota(FIRMWARE_TYPE, FIRMWARE_VERSION);
 
 // =============================================================
 // PCF8574A
@@ -282,6 +284,32 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
                 publishState(b, v, false);
         publishState(0, -1, false);
     }
+    else if (strcmp(topic, "irrigation/cmd/ota_update") == 0)
+    {
+        lcdLine(0, "  OTA: checking...  ");
+        lcdLine(1, "");
+        lcdLine(2, "");
+        lcdLine(3, "");
+        if (fota.execHTTPcheck())
+        {
+            allOff();
+            lcdLine(0, "  OTA: updating...  ");
+            lcdLine(1, "  Do not power off  ");
+            lcdLine(2, "");
+            lcdLine(3, "");
+            fota.execOTA(); // reboots on success; falls through only on failure
+            lcdLine(0, "  OTA: failed!      ");
+            lcdLine(1, "  Restarting...     ");
+            delay(3000);
+            ESP.restart();
+        }
+        else
+        {
+            lcdLine(1, "  Already latest    ");
+            delay(2000);
+            lcdDirty = true;
+        }
+    }
 }
 
 void publishHeartbeat()
@@ -353,6 +381,7 @@ void setup()
 
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(I2C_CLOCK_HZ);
+    fota.checkURL = OTA_MANIFEST_URL;
 
     // LCD
     lcd.init();

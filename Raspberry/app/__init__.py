@@ -50,4 +50,7 @@ def create_app(config_path: str = 'config.yaml') -> Flask:
     from .routes import main_bp
     app.register_blueprint(main_bp)
 
+    from .firmware import firmware_bp
+    app.register_blueprint(firmware_bp)
+
     return app
