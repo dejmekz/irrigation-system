@@ -181,10 +181,16 @@ void lcdShowIdle()
     DateTime now = rtc.now();
     char buf[LCD_COLS + 1];
 
-    snprintf(buf, sizeof(buf), "  %s %02d.%02d.%04d   ",
-             DAYS[now.dayOfTheWeek()],
-             now.day(), now.month(), now.year());
-    lcdLine(2, buf);
+    // Date only changes once per day — skip the I2C write when unchanged
+    static uint8_t lastDay = 255;
+    if (lcdDirty || now.day() != lastDay)
+    {
+        lastDay = now.day();
+        snprintf(buf, sizeof(buf), "  %s %02d.%02d.%04d   ",
+                 DAYS[now.dayOfTheWeek()],
+                 now.day(), now.month(), now.year());
+        lcdLine(2, buf);
+    }
 
     snprintf(buf, sizeof(buf), "      %02d:%02d:%02d      ",
              now.hour(), now.minute(), now.second());
@@ -193,6 +199,16 @@ void lcdShowIdle()
 
 void updateLCD()
 {
+    // Periodic full reinit restores the HD44780 controller after noise-corrupted state
+    static unsigned long lastReinit = 0;
+    if (millis() - lastReinit >= LCD_REINIT_INTERVAL_MS)
+    {
+        lastReinit = millis();
+        lcd.init();
+        lcd.backlight();
+        lcdDirty = true;
+    }
+
     if (anyActive())
     {
         static unsigned long lastForce = 0;
@@ -336,6 +352,7 @@ void setup()
     Serial.begin(115200);
 
     Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(I2C_CLOCK_HZ);
 
     // LCD
     lcd.init();

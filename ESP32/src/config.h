@@ -13,6 +13,8 @@
 // ---- I2C ----
 #define I2C_SDA 5
 #define I2C_SCL 4
+// Lower value reduces glitches on long/noisy cables (try 50000 if problems persist)
+#define I2C_CLOCK_HZ 100000UL
 
 // ---- PCF8574A relay expanders ----
 #define PCF_ADDR_0  0x38   // Box 1 & 2
@@ -25,6 +27,8 @@
 #define LCD_ADDR 0x27
 #define LCD_COLS 20
 #define LCD_ROWS 4
+// Periodic full reinit to recover the HD44780 from a noise-corrupted state
+#define LCD_REINIT_INTERVAL_MS 60000UL
 
 // ---- Pump (single, direct GPIO, active-LOW) ----
 #define PUMP_PIN  6
