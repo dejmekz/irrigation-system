@@ -1,8 +1,9 @@
+# IDE / tooling
+.claude/
+.vscode/
+
 # PlatformIO
 ESP32/.pio/
-ESP32/.vscode/c_cpp_properties.json
-ESP32/.vscode/browse.vc.db*
-ESP32/.vscode/ipch/
 
 # Python
 __pycache__/

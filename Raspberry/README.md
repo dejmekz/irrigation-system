@@ -92,11 +92,47 @@ Web UI: http://localhost:5000
 
 ## Raspberry Pi Deployment
 
+**Host:** `raspi4server.local` · **User:** `openhabian` · **Path:** `/home/openhabian/irrigation/`
+
+### Initial install
+
+> `setup.sh` has the `pi` user hardcoded — run the steps manually instead:
+
 ```bash
-bash setup.sh
+# On the Pi
+cd ~/irrigation
+python3 -m venv venv
+venv/bin/pip install --upgrade pip
+venv/bin/pip install -r requirements.txt
+sudo cp irrigation.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now irrigation
 ```
 
-The script installs dependencies, sets up the venv, and enables the systemd service.
+### Deploy code update
+
+```bash
+# From the Mac — sync files, update packages, restart
+rsync -av --exclude='.claude' /Users/dejmekz/Projects/Irrigation/Raspberry/ openhabian@raspi4server.local:~/irrigation/
+ssh openhabian@raspi4server.local "~/irrigation/venv/bin/pip install --upgrade -r ~/irrigation/requirements.txt"
+ssh openhabian@raspi4server.local "sudo systemctl restart irrigation"
+```
+
+### Update Python packages only
+
+```bash
+ssh openhabian@raspi4server.local "~/irrigation/venv/bin/pip install --upgrade -r ~/irrigation/requirements.txt"
+ssh openhabian@raspi4server.local "sudo systemctl restart irrigation"
+```
+
+### Useful commands on Pi
+
+```bash
+sudo systemctl status irrigation
+sudo journalctl -u irrigation -f
+mosquitto_pub -t irrigation/box/1/valve/1/set -m ON
+mosquitto_sub -t 'irrigation/#'
+```
 
 ## Test Environment (Debian VM)
 

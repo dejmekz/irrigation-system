@@ -1,3 +1,5 @@
+import copy
+import threading
 import paho.mqtt.client as mqtt_lib
 from .database import log_message
 from flask_socketio import SocketIO
@@ -11,6 +13,7 @@ class MQTTClient:
         self.config = config
         self.socketio = socketio
         self.connected = False
+        self._state_lock = threading.Lock()          # Fix #11: protect state dict
         # state[box_str] = {valves: {valve_str: 'ON'/'OFF'}, pump: 'ON'/'OFF'}
         self.state : dict[str, Any] = {'pump': 'OFF'}
 
@@ -61,7 +64,8 @@ class MQTTClient:
         self.publish(f'{TOPIC_BASE}/cmd/stop_all', '')
 
     def get_state(self):
-        return self.state
+        with self._state_lock:                       # Fix #11: return snapshot, not live ref
+            return copy.deepcopy(self.state)
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -86,24 +90,41 @@ class MQTTClient:
 
         # irrigation/pump/state                     (len=3)
         # irrigation/box/{box}/valve/{valve}/state  (len=6)
+        # irrigation/status                         (len=2)
         parts = topic.split('/')
+
+        if (len(parts) == 2
+                and parts[0] == TOPIC_BASE
+                and parts[1] == 'status'):
+            if payload == 'offline':                 # Fix #15: clear stale retained valve state
+                with self._state_lock:
+                    self.state = {'pump': 'OFF'}
+                    snapshot = copy.deepcopy(self.state)
+                self.socketio.emit('state_update', snapshot)
+            return
+
         if (len(parts) == 3
                 and parts[0] == TOPIC_BASE
                 and parts[1] == 'pump'
                 and parts[2] == 'state'):
-            self.state['pump'] = payload
-            self.socketio.emit('state_update', self.state)
+            with self._state_lock:
+                self.state['pump'] = payload
+                snapshot = copy.deepcopy(self.state)
+            self.socketio.emit('state_update', snapshot)
 
         elif len(parts) >= 4 and parts[0] == TOPIC_BASE and parts[1] == 'box':
             box = parts[2]
-            if box not in self.state:
-                self.state[box] = {'valves': {}}
-
-            if (len(parts) == 6
-                    and parts[3] == 'valve'
-                    and parts[5] == 'state'):
-                self.state[box]['valves'][parts[4]] = payload
-                self.socketio.emit('state_update', self.state)
+            snapshot = None
+            with self._state_lock:                   # Fix #11: atomic check-then-set
+                if box not in self.state:
+                    self.state[box] = {'valves': {}}
+                if (len(parts) == 6
+                        and parts[3] == 'valve'
+                        and parts[5] == 'state'):
+                    self.state[box]['valves'][parts[4]] = payload
+                    snapshot = copy.deepcopy(self.state)
+            if snapshot is not None:
+                self.socketio.emit('state_update', snapshot)
 
     def _on_disconnect(self, client, userdata, rc):
         self.connected = False

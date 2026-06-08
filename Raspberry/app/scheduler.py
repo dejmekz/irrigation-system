@@ -31,14 +31,17 @@ class IrrigationScheduler:
         if len(parts) != 5:
             return
         minute, hour, day, month, dow = parts
-        self._scheduler.add_job(
-            self.run_script,
-            CronTrigger(minute=minute, hour=hour, day=day,
-                        month=month, day_of_week=dow),
-            args=[sched['script_id']],
-            id=f"sched_{sched['id']}",
-            replace_existing=True,
-        )
+        try:                                         # Fix #7: catch invalid cron fields
+            self._scheduler.add_job(
+                self.run_script,
+                CronTrigger(minute=minute, hour=hour, day=day,
+                            month=month, day_of_week=dow),
+                args=[sched['script_id']],
+                id=f"sched_{sched['id']}",
+                replace_existing=True,
+            )
+        except Exception as exc:
+            print(f"Invalid cron for schedule {sched['id']} ({sched['cron']}): {exc}")
 
     def reload_schedule(self, sched_id):
         try:
@@ -65,7 +68,7 @@ class IrrigationScheduler:
         pump_delay = int(script.get('pump_delay') or 0)
 
         with self._lock:
-            if self._running:
+            if self._running is not None:            # Fix #8: falsy "" would bypass old guard
                 return
             self._stop_event.clear()
             self._running = script['name']
@@ -75,6 +78,7 @@ class IrrigationScheduler:
         })
 
         def execute():
+            pump_used = bool(pump_box)               # Fix #2: track all pump start paths
             try:
                 if pump_box and not self._stop_event.is_set():
                     self.mqtt.set_pump(True)
@@ -90,7 +94,7 @@ class IrrigationScheduler:
                     action = step.get('action')
                     box = step.get('box', 1)
                     valve = step.get('valve', 1)
-                    duration = int(step.get('duration', 0))
+                    duration = int(step.get('duration') or 0)   # Fix #5: null → 0
 
                     self.socketio.emit('script_status', {
                         'running': script['name'],
@@ -110,6 +114,7 @@ class IrrigationScheduler:
                                 self.mqtt.set_valve(sub_box, sub_valve, False)
                             elif sub_action == 'pump_on':
                                 self.mqtt.set_pump(True)
+                                pump_used = True
                             elif sub_action == 'pump_off':
                                 self.mqtt.set_pump(False)
                     elif action == 'valve_on':
@@ -118,6 +123,7 @@ class IrrigationScheduler:
                         self.mqtt.set_valve(box, valve, False)
                     elif action == 'pump_on':
                         self.mqtt.set_pump(True)
+                        pump_used = True
                     elif action == 'pump_off':
                         self.mqtt.set_pump(False)
 
@@ -127,14 +133,18 @@ class IrrigationScheduler:
                                 break
                             time.sleep(1)
 
+                    # Auto-close after duration
                     if action == 'valve_on':
                         self.mqtt.set_valve(box, valve, False)
                     elif action == 'parallel_group':
                         for sub in step.get('actions', []):
-                            if sub.get('action') == 'valve_on':
+                            sub_action = sub.get('action')
+                            if sub_action == 'valve_on':
                                 self.mqtt.set_valve(sub.get('box', 1), sub.get('valve', 1), False)
+                            elif sub_action == 'pump_on':   # Fix #1: close pump started in group
+                                self.mqtt.set_pump(False)
             finally:
-                if pump_box:
+                if pump_used:                        # Fix #2: stop pump however it was started
                     self.mqtt.set_pump(False)
                 with self._lock:
                     self._running = None
@@ -145,7 +155,10 @@ class IrrigationScheduler:
         threading.Thread(target=execute, daemon=True).start()
 
     def stop_script(self):
-        self._stop_event.set()
+        with self._lock:                             # Fix #4: only arm stop if a script is running
+            if self._running is not None:
+                self._stop_event.set()
 
     def get_status(self):
-        return {'running': self._running}
+        with self._lock:                             # Fix #13: read under lock
+            return {'running': self._running}

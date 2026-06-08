@@ -13,6 +13,12 @@ def get_db():
 
 
 def init_db():
+    # Enable WAL mode first (cannot run inside executescript)  Fix #14
+    conn = get_db()
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.commit()
+    conn.close()
+
     with get_db() as conn:
         conn.executescript('''
             CREATE TABLE IF NOT EXISTS scripts (
@@ -48,15 +54,18 @@ def init_db():
 
 
 def log_message(topic: str, payload: str, direction: str):
-    with get_db() as conn:
-        conn.execute(
-            'INSERT INTO message_log (topic, payload, direction) VALUES (?, ?, ?)',
-            (topic, str(payload), direction),
-        )
-        conn.execute(
-            'DELETE FROM message_log WHERE id NOT IN '
-            '(SELECT id FROM message_log ORDER BY id DESC LIMIT 1000)'
-        )
+    try:                                             # Fix #14: don't crash MQTT callback on DB error
+        with get_db() as conn:
+            conn.execute(
+                'INSERT INTO message_log (topic, payload, direction) VALUES (?, ?, ?)',
+                (topic, str(payload), direction),
+            )
+            conn.execute(
+                'DELETE FROM message_log WHERE id NOT IN '
+                '(SELECT id FROM message_log ORDER BY id DESC LIMIT 1000)'
+            )
+    except Exception:
+        pass
 
 
 def get_logs(limit: int = 200):

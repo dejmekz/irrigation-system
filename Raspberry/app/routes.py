@@ -1,8 +1,22 @@
 import json
 from flask import Blueprint, render_template, request, jsonify, current_app
+from apscheduler.triggers.cron import CronTrigger
 from . import database
 
 main_bp = Blueprint('main', __name__)
+
+
+def _validate_cron(cron: str) -> str | None:
+    """Return an error string if cron is invalid, else None."""
+    parts = cron.split()
+    if len(parts) != 5:
+        return 'cron must have exactly 5 fields'
+    minute, hour, day, month, dow = parts
+    try:
+        CronTrigger(minute=minute, hour=hour, day=day, month=month, day_of_week=dow)
+    except Exception as exc:
+        return f'invalid cron: {exc}'
+    return None
 
 
 @main_bp.route('/')
@@ -24,7 +38,14 @@ def control_valve():
     data = request.get_json()
     if not data or 'box' not in data or 'valve' not in data or 'state' not in data:
         return jsonify({'error': 'missing fields: box, valve, state'}), 400
-    current_app.extensions['mqtt'].set_valve(data['box'], data['valve'], data['state'])
+    if not isinstance(data['state'], bool):          # Fix #6: reject non-boolean ("false" string etc.)
+        return jsonify({'error': 'state must be a JSON boolean'}), 400
+    box, valve = data['box'], data['valve']
+    if not (isinstance(box, int) and 1 <= box <= 4):  # Fix: prevent malformed MQTT topics
+        return jsonify({'error': 'box must be an integer 1-4'}), 400
+    if not (isinstance(valve, int) and 1 <= valve <= 3):
+        return jsonify({'error': 'valve must be an integer 1-3'}), 400
+    current_app.extensions['mqtt'].set_valve(box, valve, data['state'])
     return jsonify({'ok': True})
 
 
@@ -33,6 +54,8 @@ def control_pump():
     data = request.get_json()
     if not data or 'state' not in data:
         return jsonify({'error': 'missing field: state'}), 400
+    if not isinstance(data['state'], bool):          # Fix #6
+        return jsonify({'error': 'state must be a JSON boolean'}), 400
     current_app.extensions['mqtt'].set_pump(data['state'])
     return jsonify({'ok': True})
 
@@ -66,6 +89,10 @@ def api_save_script():
     data = request.get_json()
     if not data or 'name' not in data or 'steps' not in data:
         return jsonify({'error': 'missing fields: name, steps'}), 400
+    if not isinstance(data['name'], str) or not data['name'].strip():
+        return jsonify({'error': 'name must be a non-empty string'}), 400  # Fix #8
+    if not isinstance(data['steps'], list):          # Fix #9: prevent double-encoded steps
+        return jsonify({'error': 'steps must be a JSON array'}), 400
     script_id = database.save_script(
         data['name'], data['steps'],
         pump_box=data.get('pump_box'),
@@ -79,6 +106,10 @@ def api_update_script(script_id):
     data = request.get_json()
     if not data or 'name' not in data or 'steps' not in data:
         return jsonify({'error': 'missing fields: name, steps'}), 400
+    if not isinstance(data['name'], str) or not data['name'].strip():
+        return jsonify({'error': 'name must be a non-empty string'}), 400  # Fix #8
+    if not isinstance(data['steps'], list):          # Fix #9
+        return jsonify({'error': 'steps must be a JSON array'}), 400
     database.update_script(
         script_id, data['name'], data['steps'],
         pump_box=data.get('pump_box'),
@@ -126,6 +157,9 @@ def api_save_schedule():
     data = request.get_json()
     if not data or 'name' not in data or 'script_id' not in data or 'cron' not in data:
         return jsonify({'error': 'missing fields: name, script_id, cron'}), 400
+    err = _validate_cron(data['cron'])               # Fix #7: validate before saving
+    if err:
+        return jsonify({'error': err}), 400
     sched_id = database.save_schedule(
         data['name'], data['script_id'], data['cron'],
         data.get('enabled', True),
@@ -139,6 +173,9 @@ def api_update_schedule(sched_id):
     data = request.get_json()
     if not data or 'name' not in data or 'script_id' not in data or 'cron' not in data:
         return jsonify({'error': 'missing fields: name, script_id, cron'}), 400
+    err = _validate_cron(data['cron'])               # Fix #7
+    if err:
+        return jsonify({'error': err}), 400
     database.update_schedule(
         sched_id, data['name'], data['script_id'], data['cron'],
         data.get('enabled', True),

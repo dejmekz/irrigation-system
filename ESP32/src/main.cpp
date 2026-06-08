@@ -84,8 +84,18 @@ void allOff()
     pcfState[0] = pcfState[1] = 0x00;
     digitalWrite(PUMP_PIN, LOW);
 #endif
-    pcfFlush(0);
-    pcfFlush(1);
+    // Fix #3: check I2C result and retry once on failure so we don't
+    // report everything off while relays are still physically energised.
+    bool ok0 = pcfFlush(0);
+    bool ok1 = pcfFlush(1);
+    if (!ok0) ok0 = pcfFlush(0);
+    if (!ok1) ok1 = pcfFlush(1);
+    if (!ok0 || !ok1)
+    {
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), " allOff I2C error!  ");
+        pcfErrUntil = millis() + 5000;
+        Serial.println("allOff: PCF I2C write failed — relays may still be active!");
+    }
     memset(valveOn, 0, sizeof(valveOn));
     pumpOn = false;
     lcdDirty = true;
@@ -220,6 +230,18 @@ void publishState(int box, int valve, bool on)
     }
 }
 
+void setPump(bool on)
+{
+#if RELAY_ACTIVE_LOW
+    digitalWrite(PUMP_PIN, on ? LOW : HIGH);
+#else
+    digitalWrite(PUMP_PIN, on ? HIGH : LOW);
+#endif
+    pumpOn = on;
+    publishState(0, -1, on);
+    lcdDirty = true;
+}
+
 void mqttCallback(char *topic, byte *payload, unsigned int len)
 {
     bool on = (len == 2 && payload[0] == 'O' && payload[1] == 'N');
@@ -234,14 +256,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
     }
     else if (strcmp(topic, "irrigation/pump/set") == 0)
     {
-        pumpOn = on;
-#if RELAY_ACTIVE_LOW
-        digitalWrite(PUMP_PIN, on ? LOW : HIGH);
-#else
-        digitalWrite(PUMP_PIN, on ? HIGH : LOW);
-#endif
-        publishState(0, -1, on);
-        lcdDirty = true;
+        setPump(on);
     }
     else if (strcmp(topic, "irrigation/cmd/stop_all") == 0)
     {
@@ -389,7 +404,10 @@ void loop()
     esp_task_wdt_reset();
 
     // --- 1. CONTROL OF WI-FI STATE AND SAFETY RESTART ---
+    // Fix #12: arm the watchdog timer the moment WiFi drops; only reset it after
+    // the connection has been stable for >=5 s to survive brief reconnect flickers.
     static unsigned long wifiLostAt = 0;
+    static unsigned long wifiStableAt = 0;
     static bool wifiWasConnected = false;
 
     if (WiFi.status() == WL_CONNECTED)
@@ -400,31 +418,32 @@ void loop()
             lcdLine(1, " WiFi connected ");
             Serial.println("WiFi: connected");
             wifiWasConnected = true;
+            wifiStableAt = millis();
         }
-        wifiLostAt = 0; // Reset security watchdog timer on successful connection
+        // Only clear the safety timer after the link has been up for 5 s
+        if (wifiStableAt != 0 && millis() - wifiStableAt >= 5000)
+            wifiLostAt = 0;
     }
     else
     { // WiFi disconnected
-        wifiWasConnected = false;
-
-        // Security watchdog: if WiFi is lost while any valve or pump is active, we stop everything immediately to prevent uncontrolled watering. We also set a flag to show the error on LCD for 5 seconds.
-        if (anyActive())
+        if (wifiWasConnected)
         {
-            if (wifiLostAt == 0)
-                wifiLostAt = millis();
-
-            if (millis() - wifiLostAt >= WIFI_ACTIVE_SAFETY_MS)
-            {
-                allOff(); // Emergency stop — torn off all valves and pump
-                snprintf(pcfErrMsg, sizeof(pcfErrMsg), " WiFi lost! Stopped ");
-                pcfErrUntil = millis() + 5000;
-                wifiLostAt = 0;
-                Serial.println("Critical: WiFi connection lost while watering! All valves and pump stopped as a safety measure.");
-            }
+            wifiWasConnected = false;
+            wifiStableAt = 0;
         }
-        else
+
+        // Arm safety timer immediately on first disconnected loop tick
+        if (wifiLostAt == 0)
+            wifiLostAt = millis();
+
+        // Security watchdog: stop everything if WiFi has been gone too long while active
+        if (anyActive() && millis() - wifiLostAt >= WIFI_ACTIVE_SAFETY_MS)
         {
-            wifiLostAt = 0;
+            allOff(); // Emergency stop
+            snprintf(pcfErrMsg, sizeof(pcfErrMsg), " WiFi lost! Stopped ");
+            pcfErrUntil = millis() + 5000;
+            wifiLostAt = millis(); // restart timer so repeated checks don't re-trigger
+            Serial.println("Critical: WiFi connection lost while watering! All valves and pump stopped as a safety measure.");
         }
 
         // --- 2. Connection Retry ---
@@ -437,7 +456,10 @@ void loop()
         }
     }
 
-    // --- 3. MQTT WATCHDOG (executed only if wifi is connected) ---
+    // --- 3. MQTT LOOP + WATCHDOG ---
+    if (WiFi.status() == WL_CONNECTED && mqtt.connected())
+        mqtt.loop();
+
     if (WiFi.status() == WL_CONNECTED && !mqtt.connected())
     {
         static unsigned long lastMqttRetry = 0;
