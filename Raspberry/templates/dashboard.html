@@ -73,6 +73,10 @@ function applyState(state) {
 
 socket.on('state_update', applyState);
 
+socket.on('connect', () => {
+  fetch('/api/state').then(r => r.json()).then(applyState);
+});
+
 function toggleValve(box, valve) {
   const btn = document.getElementById(`valve-btn-${box}-${valve}`);
   const newState = btn.dataset.state !== 'on';

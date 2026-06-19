@@ -53,7 +53,7 @@ socket.on('mqtt_status', data => {
   }
 });
 
-socket.on('script_status', data => {
+function applyScriptStatus(data) {
   const nav = document.getElementById('script-badge-nav');
   const name = document.getElementById('script-name-nav');
   if (data.running) {
@@ -62,6 +62,12 @@ socket.on('script_status', data => {
   } else {
     nav.style.display = 'none';
   }
+}
+
+socket.on('script_status', applyScriptStatus);
+
+socket.on('connect', () => {
+  fetch('/api/scheduler/status').then(r => r.json()).then(applyScriptStatus);
 });
 </script>
 {% block scripts %}{% endblock %}
