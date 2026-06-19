@@ -10,6 +10,7 @@ mqtt:
 system:
   boxes: 4
   valves_per_box: 3
+  max_script_duration: 7200  # seconds; script is force-stopped if it exceeds this
 
 web:
   host: "0.0.0.0"

@@ -10,13 +10,14 @@ from . import database
 
 
 class IrrigationScheduler:
-    def __init__(self, mqtt_client: MQTTClient, socketio : SocketIO):
+    def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO, max_script_duration: int = 7200):
         self.mqtt = mqtt_client
         self.socketio = socketio
         self._scheduler = BackgroundScheduler(daemon=True)
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = None
+        self._max_duration = max_script_duration
 
     def start(self):
         self._scheduler.start()
@@ -79,6 +80,9 @@ class IrrigationScheduler:
 
         def execute():
             pump_used = bool(pump_box)               # Fix #2: track all pump start paths
+            watchdog = threading.Timer(self._max_duration, self._stop_event.set)
+            watchdog.daemon = True
+            watchdog.start()
             try:
                 if pump_box and not self._stop_event.is_set():
                     self.mqtt.set_pump(True)
@@ -144,6 +148,7 @@ class IrrigationScheduler:
                             elif sub_action == 'pump_on':   # Fix #1: close pump started in group
                                 self.mqtt.set_pump(False)
             finally:
+                watchdog.cancel()
                 if pump_used:                        # Fix #2: stop pump however it was started
                     self.mqtt.set_pump(False)
                 with self._lock:

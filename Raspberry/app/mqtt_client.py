@@ -26,6 +26,8 @@ class MQTTClient:
                 config['username'], config.get('password', '')
             )
 
+        self._first_connect = True
+
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
         self._client.on_disconnect = self._on_disconnect
@@ -70,6 +72,9 @@ class MQTTClient:
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
+            if self._first_connect:
+                self._first_connect = False
+                self.all_off()  # clear any stale relay state left over from a previous run
             client.subscribe(f'{TOPIC_BASE}/pump/state')
             client.subscribe(f'{TOPIC_BASE}/box/+/valve/+/state')
             client.subscribe(f'{TOPIC_BASE}/status')

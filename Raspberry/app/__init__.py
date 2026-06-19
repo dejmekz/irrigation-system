@@ -42,7 +42,10 @@ def create_app(config_path: str = 'config.yaml') -> Flask:
     app.extensions['mqtt'] = mqtt_client
 
     from .scheduler import IrrigationScheduler
-    scheduler: IrrigationScheduler = IrrigationScheduler(mqtt_client, socketio)
+    scheduler: IrrigationScheduler = IrrigationScheduler(
+        mqtt_client, socketio,
+        max_script_duration=config['system'].get('max_script_duration', 7200),
+    )
     scheduler.start()
     scheduler.load_schedules()
     app.extensions['scheduler'] = scheduler
