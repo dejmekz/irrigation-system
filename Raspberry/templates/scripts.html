@@ -80,12 +80,12 @@
               <option value="3">Box 3</option>
               <option value="4">Box 4</option>
             </select>
-            <div class="input-group" style="max-width:180px">
+            <div class="input-group" style="max-width:260px">
               <span class="input-group-text">Delay</span>
-              <input type="number" class="form-control" id="pump-delay" value="0" min="0">
-              <select class="form-select" id="pump-delay-unit" style="max-width:60px">
-                <option value="sec">sec</option>
-                <option value="min">min</option>
+              <input type="number" class="form-control" id="pump-delay" value="0" min="0" style="max-width:80px">
+              <select class="form-select" id="pump-delay-unit" style="min-width:100px">
+                <option value="sec">seconds</option>
+                <option value="min">minutes</option>
               </select>
             </div>
           </div>
@@ -117,35 +117,35 @@
     <div class="card-body p-2">
       <div class="row g-2 align-items-center">
         <div class="col-auto step-handle text-muted"><i class="bi bi-grip-vertical"></i></div>
-        <div class="col">
-          <select class="form-select form-select-sm step-action" onchange="onActionChange(this)">
+        <div class="col-auto">
+          <select class="form-select form-select-sm step-action" onchange="onActionChange(this)" style="min-width:165px">
             <option value="valve_on">Valve ON</option>
             <option value="valve_off">Valve OFF</option>
             <option value="wait">Wait</option>
             <option value="parallel_group">Parallel Group</option>
           </select>
         </div>
-        <div class="col step-box-col">
-          <select class="form-select form-select-sm step-box">
+        <div class="col-auto step-box-col">
+          <select class="form-select form-select-sm step-box" style="min-width:90px">
             <option value="1">Box 1</option>
             <option value="2">Box 2</option>
             <option value="3">Box 3</option>
             <option value="4">Box 4</option>
           </select>
         </div>
-        <div class="col step-valve-col">
-          <select class="form-select form-select-sm step-valve">
+        <div class="col-auto step-valve-col">
+          <select class="form-select form-select-sm step-valve" style="min-width:90px">
             <option value="1">Valve 1</option>
             <option value="2">Valve 2</option>
             <option value="3">Valve 3</option>
           </select>
         </div>
-        <div class="col">
+        <div class="col-auto">
           <div class="input-group input-group-sm">
-            <input type="number" class="form-control step-duration" value="0" min="0" placeholder="0">
-            <select class="form-select form-select-sm step-duration-unit" style="max-width:60px">
-              <option value="sec">sec</option>
-              <option value="min">min</option>
+            <input type="number" class="form-control step-duration" value="0" min="0" style="max-width:70px">
+            <select class="form-select form-select-sm step-duration-unit" style="min-width:95px">
+              <option value="sec">seconds</option>
+              <option value="min">minutes</option>
             </select>
           </div>
         </div>
@@ -167,17 +167,17 @@
 <!-- Sub-action template (used inside parallel groups) -->
 <template id="sub-action-tpl">
   <div class="parallel-action-row d-flex flex-wrap gap-2 align-items-center mb-1">
-    <select class="form-select form-select-sm sub-action" style="max-width:130px">
+    <select class="form-select form-select-sm sub-action" style="width:auto;min-width:120px">
       <option value="valve_on">Valve ON</option>
       <option value="valve_off">Valve OFF</option>
     </select>
-    <select class="form-select form-select-sm sub-box" style="max-width:90px">
+    <select class="form-select form-select-sm sub-box" style="width:auto;min-width:90px">
       <option value="1">Box 1</option>
       <option value="2">Box 2</option>
       <option value="3">Box 3</option>
       <option value="4">Box 4</option>
     </select>
-    <select class="form-select form-select-sm sub-valve" style="max-width:90px">
+    <select class="form-select form-select-sm sub-valve" style="width:auto;min-width:90px">
       <option value="1">Valve 1</option>
       <option value="2">Valve 2</option>
       <option value="3">Valve 3</option>
