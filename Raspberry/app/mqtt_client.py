@@ -1,4 +1,5 @@
 import copy
+import json
 import threading
 import paho.mqtt.client as mqtt_lib
 from .database import log_message
@@ -80,6 +81,7 @@ class MQTTClient:
             client.subscribe(f'{TOPIC_BASE}/box/+/valve/+/state')
             client.subscribe(f'{TOPIC_BASE}/status')
             client.subscribe(f'{TOPIC_BASE}/heartbeat')
+            client.subscribe(f'{TOPIC_BASE}/hw_status')
             self.socketio.emit('mqtt_status', {'connected': True})
             print('MQTT connected')
         else:
@@ -118,6 +120,18 @@ class MQTTClient:
                 and parts[2] == 'state'):
             with self._state_lock:
                 self.state['pump'] = payload
+                snapshot = copy.deepcopy(self.state)
+            self.socketio.emit('state_update', snapshot)
+
+        elif (len(parts) == 2
+                and parts[0] == TOPIC_BASE
+                and parts[1] == 'hw_status'):
+            try:
+                hw = json.loads(payload)
+            except Exception:
+                hw = {}
+            with self._state_lock:
+                self.state['hw'] = hw
                 snapshot = copy.deepcopy(self.state)
             self.socketio.emit('state_update', snapshot)
 

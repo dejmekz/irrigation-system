@@ -40,7 +40,7 @@
 // ---- OTA ----
 // Bump FIRMWARE_VERSION before every release build, then upload the new .bin to the Pi.
 // The Pi manifest version must match for the ESP32 to recognise it as an update.
-#define FIRMWARE_VERSION  4
+#define FIRMWARE_VERSION  5
 #define FIRMWARE_TYPE     "irrigation-esp32c3"
 #define OTA_MANIFEST_URL  "http://raspi4server.local:5000/firmware/manifest.json"
 

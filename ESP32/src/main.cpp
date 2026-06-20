@@ -17,8 +17,11 @@ static const uint8_t PCF_ADDR[2] = {PCF_ADDR_0, PCF_ADDR_1};
 static bool valveOn[NUM_BOXES][VALVES_PER_BOX] = {};
 static bool pumpOn = false;
 
-// ---- RTC health ----
+// ---- Hardware health ----
 static bool rtcOk = false;
+static bool pcfOk[2] = {false, false};
+static bool lcdOk = false;
+static bool hwStatusDirty = false;
 
 // ---- PCF fault overlay ----
 static char pcfErrMsg[LCD_COLS + 1] = "";
@@ -42,12 +45,15 @@ bool pcfFlush(int idx)
 {
     Wire.beginTransmission(PCF_ADDR[idx]);
     Wire.write(pcfState[idx]);
-    if (Wire.endTransmission() != 0)
+    bool ok = (Wire.endTransmission() == 0);
+    if (ok != pcfOk[idx])
     {
-        log_e("PCF[%d] I2C error", idx);
-        return false;
+        pcfOk[idx] = ok;
+        hwStatusDirty = true;
     }
-    return true;
+    if (!ok)
+        log_e("PCF[%d] I2C error", idx);
+    return ok;
 }
 
 // box 1-4, valve 1-3
@@ -316,6 +322,20 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
     }
 }
 
+void publishHwStatus()
+{
+    if (!mqtt.connected())
+        return;
+    char payload[96];
+    snprintf(payload, sizeof(payload),
+             "{\"pcf0\":%s,\"pcf1\":%s,\"rtc\":%s,\"lcd\":%s}",
+             pcfOk[0] ? "true" : "false",
+             pcfOk[1] ? "true" : "false",
+             rtcOk    ? "true" : "false",
+             lcdOk    ? "true" : "false");
+    mqtt.publish("irrigation/hw_status", payload, true);
+}
+
 void publishHeartbeat()
 {
     if (!mqtt.connected())
@@ -336,11 +356,14 @@ void publishHeartbeat()
     if (pumpOn)
         snprintf(active + pos, (int)sizeof(active) - pos > 0 ? sizeof(active) - pos : 0, "pump");
 
-    char payload[128];
+    bool hwOk = pcfOk[0] && pcfOk[1];
+    char payload[160];
     if (active[0] == '\0')
-        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d}", FIRMWARE_VERSION);
+        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s}",
+                 FIRMWARE_VERSION, hwOk ? "true" : "false");
     else
-        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d}", active, FIRMWARE_VERSION);
+        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d,\"hw_ok\":%s}",
+                 active, FIRMWARE_VERSION, hwOk ? "true" : "false");
 
     mqtt.publish(MQTT_HEARTBEAT_TOPIC, payload, true);
 }
@@ -363,6 +386,7 @@ bool mqttReconnect()
             publishState(b, v, valveOn[b - 1][v - 1]);
     publishState(0, -1, pumpOn);
     publishHeartbeat();
+    publishHwStatus();
     return true;
 }
 
@@ -391,7 +415,11 @@ void setup()
     Wire.setClock(I2C_CLOCK_HZ);
     fota.setManifestURL(OTA_MANIFEST_URL);
 
-    // LCD
+    // LCD — probe before init; LiquidCrystal_I2C has no return value from init()
+    Wire.beginTransmission(LCD_ADDR);
+    lcdOk = (Wire.endTransmission() == 0);
+    if (!lcdOk)
+        log_e("LCD not found at 0x%02X", LCD_ADDR);
     lcd.init();
     lcd.backlight();
     lcdLine(0, "  Irrigation Ctrl   ");
@@ -404,8 +432,7 @@ void setup()
     if (!rtcOk)
     {
         log_e("RTC not found");
-        lcdLine(2, "  RTC not found!    ");
-        delay(2000);
+        if (lcdOk) { lcdLine(2, "  RTC not found!    "); delay(2000); }
     }
     else
     {
@@ -417,13 +444,17 @@ void setup()
     {
         Wire.beginTransmission(PCF_ADDR[i]);
         Wire.write(pcfState[i]);
-        if (Wire.endTransmission() != 0)
+        pcfOk[i] = (Wire.endTransmission() == 0);
+        if (!pcfOk[i])
         {
             log_e("PCF[%d] not found", i);
-            char msg[LCD_COLS + 1];
-            snprintf(msg, sizeof(msg), "  PCF[%d] not found! ", i);
-            lcdLine(2, msg);
-            delay(2000);
+            if (lcdOk)
+            {
+                char msg[LCD_COLS + 1];
+                snprintf(msg, sizeof(msg), "  PCF[%d] not found! ", i);
+                lcdLine(2, msg);
+                delay(2000);
+            }
         }
         else
         {
@@ -533,6 +564,13 @@ void loop()
             log_w("MQTT lost, reconnecting...");
             mqttReconnect();
         }
+    }
+
+    // Publish hw_status immediately when a device goes offline or recovers
+    if (hwStatusDirty && mqtt.connected())
+    {
+        publishHwStatus();
+        hwStatusDirty = false;
     }
 
     // Heartbeat every 5 minutes
