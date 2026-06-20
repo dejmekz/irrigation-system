@@ -50,6 +50,8 @@ def create_app(config_path: str = 'config.yaml') -> Flask:
     scheduler.load_schedules()
     app.extensions['scheduler'] = scheduler
 
+    mqtt_client.on_esp32_online = scheduler.resync_to_esp32
+
     from .routes import main_bp
     app.register_blueprint(main_bp)
 

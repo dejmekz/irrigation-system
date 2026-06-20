@@ -15,7 +15,7 @@ static const uint8_t PCF_ADDR[2] = {PCF_ADDR_0, PCF_ADDR_1};
 
 // ---- Valve / pump state (for LCD) ----
 static bool valveOn[NUM_BOXES][VALVES_PER_BOX] = {};
-static bool pumpOn = false; // single pump on PUMP_BOX
+static bool pumpOn = false;
 
 // ---- RTC health ----
 static bool rtcOk = false;
@@ -152,7 +152,7 @@ void lcdShowActive()
             line[12] = 'V';
             line[13] = '3';
         }
-        if (b == PUMP_BOX - 1 && pumpOn)
+        if (b == 0 && pumpOn)
         {
             line[16] = 'P';
             line[17] = 'm';

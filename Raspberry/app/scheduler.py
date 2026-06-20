@@ -17,6 +17,8 @@ class IrrigationScheduler:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = None
+        self._open_valves: set[tuple[int, int]] = set()
+        self._pump_open: bool = False
         self._max_duration = max_script_duration
 
     def start(self):
@@ -86,6 +88,8 @@ class IrrigationScheduler:
             try:
                 if pump_box and not self._stop_event.is_set():
                     self.mqtt.set_pump(True)
+                    with self._lock:
+                        self._pump_open = True
                     for _ in range(pump_delay):
                         if self._stop_event.is_set():
                             break
@@ -114,22 +118,38 @@ class IrrigationScheduler:
                             sub_valve = sub.get('valve', 1)
                             if sub_action == 'valve_on':
                                 self.mqtt.set_valve(sub_box, sub_valve, True)
+                                with self._lock:
+                                    self._open_valves.add((sub_box, sub_valve))
                             elif sub_action == 'valve_off':
                                 self.mqtt.set_valve(sub_box, sub_valve, False)
+                                with self._lock:
+                                    self._open_valves.discard((sub_box, sub_valve))
                             elif sub_action == 'pump_on':
                                 self.mqtt.set_pump(True)
                                 pump_used = True
+                                with self._lock:
+                                    self._pump_open = True
                             elif sub_action == 'pump_off':
                                 self.mqtt.set_pump(False)
+                                with self._lock:
+                                    self._pump_open = False
                     elif action == 'valve_on':
                         self.mqtt.set_valve(box, valve, True)
+                        with self._lock:
+                            self._open_valves.add((box, valve))
                     elif action == 'valve_off':
                         self.mqtt.set_valve(box, valve, False)
+                        with self._lock:
+                            self._open_valves.discard((box, valve))
                     elif action == 'pump_on':
                         self.mqtt.set_pump(True)
                         pump_used = True
+                        with self._lock:
+                            self._pump_open = True
                     elif action == 'pump_off':
                         self.mqtt.set_pump(False)
+                        with self._lock:
+                            self._pump_open = False
 
                     if duration > 0:
                         for _ in range(duration):
@@ -140,18 +160,26 @@ class IrrigationScheduler:
                     # Auto-close after duration
                     if action == 'valve_on':
                         self.mqtt.set_valve(box, valve, False)
+                        with self._lock:
+                            self._open_valves.discard((box, valve))
                     elif action == 'parallel_group':
                         for sub in step.get('actions', []):
                             sub_action = sub.get('action')
                             if sub_action == 'valve_on':
                                 self.mqtt.set_valve(sub.get('box', 1), sub.get('valve', 1), False)
+                                with self._lock:
+                                    self._open_valves.discard((sub.get('box', 1), sub.get('valve', 1)))
                             elif sub_action == 'pump_on':   # Fix #1: close pump started in group
                                 self.mqtt.set_pump(False)
+                                with self._lock:
+                                    self._pump_open = False
             finally:
                 watchdog.cancel()
                 if pump_used:                        # Fix #2: stop pump however it was started
                     self.mqtt.set_pump(False)
                 with self._lock:
+                    self._open_valves.clear()
+                    self._pump_open = False
                     self._running = None
                 self.socketio.emit('script_status', {
                     'running': None, 'step': 0, 'total': 0,
@@ -167,3 +195,23 @@ class IrrigationScheduler:
     def get_status(self):
         with self._lock:                             # Fix #13: read under lock
             return {'running': self._running}
+
+    def resync_to_esp32(self):
+        """Re-send active valve/pump state after an ESP32 restart mid-script."""
+        with self._lock:
+            if self._running is None:
+                return
+            open_valves = set(self._open_valves)
+            pump_open = self._pump_open
+            name = self._running
+
+        msg = f'ESP32 reconnected during "{name}" — resyncing'
+        database.log_message('system/resync', msg, 'sys')
+        self.socketio.emit('log_entry', {
+            'topic': 'system/resync', 'payload': msg, 'direction': 'sys',
+        })
+
+        for box, valve in sorted(open_valves):
+            self.mqtt.set_valve(box, valve, True)
+        if pump_open:
+            self.mqtt.set_pump(True)

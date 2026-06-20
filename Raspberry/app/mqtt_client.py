@@ -3,7 +3,7 @@ import threading
 import paho.mqtt.client as mqtt_lib
 from .database import log_message
 from flask_socketio import SocketIO
-from typing import Any
+from typing import Any, Callable
 
 TOPIC_BASE = 'irrigation'
 
@@ -27,6 +27,7 @@ class MQTTClient:
             )
 
         self._first_connect = True
+        self.on_esp32_online: Callable[[], None] | None = None
 
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
@@ -106,6 +107,9 @@ class MQTTClient:
                     self.state = {'pump': 'OFF'}
                     snapshot = copy.deepcopy(self.state)
                 self.socketio.emit('state_update', snapshot)
+            elif payload == 'online' and self.on_esp32_online:
+                # 1.5 s delay lets the ESP32 finish subscribing before we resend state
+                threading.Timer(1.5, self.on_esp32_online).start()
             return
 
         if (len(parts) == 3

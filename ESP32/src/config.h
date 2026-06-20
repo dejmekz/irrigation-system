@@ -30,9 +30,8 @@
 // Periodic full reinit to recover the HD44780 from a noise-corrupted state
 #define LCD_REINIT_INTERVAL_MS 60000UL
 
-// ---- Pump (single, direct GPIO, active-LOW) ----
+// ---- Pump (single, direct GPIO, active-LOW, MQTT-controlled by Pi) ----
 #define PUMP_PIN  6
-#define PUMP_BOX  1
 
 // ---- System ----
 #define NUM_BOXES        4
