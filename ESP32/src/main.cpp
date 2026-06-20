@@ -338,9 +338,9 @@ void publishHeartbeat()
 
     char payload[128];
     if (active[0] == '\0')
-        snprintf(payload, sizeof(payload), "{\"status\":\"idle\"}");
+        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d}", FIRMWARE_VERSION);
     else
-        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\"}", active);
+        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d}", active, FIRMWARE_VERSION);
 
     mqtt.publish(MQTT_HEARTBEAT_TOPIC, payload, true);
 }
