@@ -36,14 +36,16 @@
           </tr>
         </thead>
         <tbody id="log-body">
-          {% for entry in logs %}
-          <tr class="log-row dir-{{ entry.direction }}">
+          {% for entry in logs | reverse %}
+          <tr class="log-row dir-{{ entry.direction }}" data-id="{{ entry.id }}">
             <td class="text-muted">{{ entry.ts }}</td>
             <td>
               {% if entry.direction == 'in' %}
               <span class="badge bg-primary">IN</span>
-              {% else %}
+              {% elif entry.direction == 'out' %}
               <span class="badge bg-success">OUT</span>
+              {% else %}
+              <span class="badge bg-secondary">{{ entry.direction | upper }}</span>
               {% endif %}
             </td>
             <td>{{ entry.topic }}</td>
@@ -61,32 +63,58 @@
 {% block scripts %}
 <script>
 let currentFilter = 'all';
+let maxId = 0;
 
-socket.on('log_entry', entry => {
-  const tbody = document.getElementById('log-body');
-  const row = document.createElement('tr');
-  row.className = `log-row dir-${entry.direction}`;
-  row.innerHTML = `
-    <td class="text-muted">${new Date().toLocaleTimeString()}</td>
-    <td><span class="badge ${entry.direction === 'in' ? 'bg-primary' : 'bg-success'}">${entry.direction.toUpperCase()}</span></td>
-    <td>${escHtml(entry.topic)}</td>
-    <td>${escHtml(entry.payload)}</td>
-  `;
-  applyFilter(row);
-  tbody.appendChild(row);
-
-  // Keep max 500 rows in DOM
-  while (tbody.rows.length > 500) tbody.deleteRow(0);
-
-  if (document.getElementById('auto-scroll').checked) {
-    const c = document.getElementById('log-container');
-    c.scrollTop = c.scrollHeight;
-  }
+document.querySelectorAll('#log-body tr[data-id]').forEach(r => {
+  const id = parseInt(r.dataset.id || 0);
+  if (id > maxId) maxId = id;
 });
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+function dirBadge(dir) {
+  if (dir === 'in')  return '<span class="badge bg-primary">IN</span>';
+  if (dir === 'out') return '<span class="badge bg-success">OUT</span>';
+  return `<span class="badge bg-secondary">${escHtml(dir.toUpperCase())}</span>`;
+}
+
+function addRow(e) {
+  const tbody = document.getElementById('log-body');
+  const row = document.createElement('tr');
+  row.className = `log-row dir-${e.direction}`;
+  row.dataset.id = e.id;
+  row.innerHTML = `
+    <td class="text-muted">${escHtml(e.ts)}</td>
+    <td>${dirBadge(e.direction)}</td>
+    <td>${escHtml(e.topic)}</td>
+    <td>${escHtml(e.payload)}</td>
+  `;
+  applyFilter(row);
+  tbody.appendChild(row);
+  while (tbody.rows.length > 500) tbody.deleteRow(0);
+}
+
+function pollLog() {
+  fetch('/api/log')
+    .then(r => r.json())
+    .then(entries => {
+      const newEntries = entries.filter(e => e.id > maxId).reverse();
+      if (!newEntries.length) return;
+      newEntries.forEach(e => {
+        addRow(e);
+        if (e.id > maxId) maxId = e.id;
+      });
+      if (document.getElementById('auto-scroll').checked) {
+        const c = document.getElementById('log-container');
+        c.scrollTop = c.scrollHeight;
+      }
+    })
+    .catch(() => {});
+}
+
+setInterval(pollLog, 3000);
 
 function setFilter(f) {
   currentFilter = f;
@@ -105,7 +133,6 @@ function clearDisplay() {
   document.getElementById('log-body').innerHTML = '';
 }
 
-// Scroll to bottom on load
 document.addEventListener('DOMContentLoaded', () => {
   const c = document.getElementById('log-container');
   c.scrollTop = c.scrollHeight;
