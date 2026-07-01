@@ -30,6 +30,9 @@ static unsigned long pcfErrUntil = 0;
 // ---- LCD dirty flag ----
 static bool lcdDirty = true;
 
+// ---- Pump safety watchdog ----
+static unsigned long lastValveActivityAt = 0;
+
 // ---- Objects ----
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -262,6 +265,8 @@ void setPump(bool on)
     digitalWrite(PUMP_PIN, on ? HIGH : LOW);
 #endif
     pumpOn = on;
+    if (on)
+        lastValveActivityAt = millis();
     publishState(0, -1, on);
     lcdDirty = true;
 }
@@ -276,6 +281,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
         valveOn[box - 1][valve - 1] = on;
         setRelay(box, valve, on);
         publishState(box, valve, on);
+        lastValveActivityAt = millis();
         lcdDirty = true;
     }
     else if (strcmp(topic, "irrigation/pump/set") == 0)
@@ -564,6 +570,15 @@ void loop()
             log_w("MQTT lost, reconnecting...");
             mqttReconnect();
         }
+    }
+
+    // Pump safety: stop pump if no valve SET command received for 30 minutes
+    if (pumpOn && millis() - lastValveActivityAt >= PUMP_SAFETY_TIMEOUT_MS)
+    {
+        setPump(false);
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), " Pump safety stop!  ");
+        pcfErrUntil = millis() + 5000;
+        log_e("Pump safety stop: no valve activity for 30 min");
     }
 
     // Publish hw_status immediately when a device goes offline or recovers

@@ -40,7 +40,7 @@
 // ---- OTA ----
 // Bump FIRMWARE_VERSION before every release build, then upload the new .bin to the Pi.
 // The Pi manifest version must match for the ESP32 to recognise it as an update.
-#define FIRMWARE_VERSION  5
+#define FIRMWARE_VERSION  6
 #define FIRMWARE_TYPE     "irrigation-esp32c3"
 #define OTA_MANIFEST_URL  "http://raspi4server.local:5000/firmware/manifest.json"
 
@@ -52,3 +52,5 @@
 #define WIFI_ACTIVE_SAFETY_MS  30000UL
 // Hardware task watchdog: reboot if main loop stalls (must exceed WIFI_RETRY_INTERVAL_MS)
 #define TASK_WDT_TIMEOUT_S     60
+// Stop pump if no valve SET command received for this long while pump is on
+#define PUMP_SAFETY_TIMEOUT_MS 1800000UL  // 30 minutes
