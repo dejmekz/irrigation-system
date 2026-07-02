@@ -243,14 +243,6 @@ void updateLCD()
 // MQTT
 // =============================================================
 
-void publishAllOff()
-{
-    for (int b = 1; b <= NUM_BOXES; b++)
-        for (int v = 1; v <= VALVES_PER_BOX; v++)
-            publishState(b, v, false);
-    publishState(0, -1, false);
-}
-
 void publishState(int box, int valve, bool on)
 {
     char topic[64];
@@ -263,6 +255,14 @@ void publishState(int box, int valve, bool on)
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), " MQTT publish failed! ");
         pcfErrUntil = millis() + 5000;
     }
+}
+
+void publishAllOff()
+{
+    for (int b = 1; b <= NUM_BOXES; b++)
+        for (int v = 1; v <= VALVES_PER_BOX; v++)
+            publishState(b, v, false);
+    publishState(0, -1, false);
 }
 
 void setPump(bool on)
