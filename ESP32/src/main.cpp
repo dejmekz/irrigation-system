@@ -243,6 +243,14 @@ void updateLCD()
 // MQTT
 // =============================================================
 
+void publishAllOff()
+{
+    for (int b = 1; b <= NUM_BOXES; b++)
+        for (int v = 1; v <= VALVES_PER_BOX; v++)
+            publishState(b, v, false);
+    publishState(0, -1, false);
+}
+
 void publishState(int box, int valve, bool on)
 {
     char topic[64];
@@ -291,10 +299,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
     else if (strcmp(topic, "irrigation/cmd/stop_all") == 0)
     {
         allOff();
-        for (int b = 1; b <= NUM_BOXES; b++)
-            for (int v = 1; v <= VALVES_PER_BOX; v++)
-                publishState(b, v, false);
-        publishState(0, -1, false);
+        publishAllOff();
     }
     else if (strcmp(topic, "irrigation/cmd/ota_update") == 0)
     {
@@ -572,13 +577,14 @@ void loop()
         }
     }
 
-    // Pump safety: stop pump if no valve SET command received for 30 minutes
+    // Pump safety: stop pump AND all valves if no valve SET command for 30 minutes
     if (pumpOn && millis() - lastValveActivityAt >= PUMP_SAFETY_TIMEOUT_MS)
     {
-        setPump(false);
+        allOff();
+        publishAllOff();
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), " Pump safety stop!  ");
         pcfErrUntil = millis() + 5000;
-        log_e("Pump safety stop: no valve activity for 30 min");
+        log_e("Pump safety stop: no valve activity for 30 min — all outputs off");
     }
 
     // Publish hw_status immediately when a device goes offline or recovers
