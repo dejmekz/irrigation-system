@@ -80,7 +80,7 @@ void setRelay(int box, int valve, bool on)
 
     if (!pcfFlush(idx))
     {
-        snprintf(pcfErrMsg, sizeof(pcfErrMsg), " PCF[%d] relay error! ", idx);
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), "PCF[%d] relay error!", idx);
         pcfErrUntil = millis() + 3000;
     }
 }
@@ -118,6 +118,7 @@ void allOff()
 
 void lcdLine(int row, const char *text)
 {
+    if (!lcdOk) return;
     char buf[LCD_COLS + 1];
     snprintf(buf, sizeof(buf), "%-*s", LCD_COLS, text);
     lcd.setCursor(0, row);
@@ -140,6 +141,7 @@ bool anyActive()
 //  0123456789012345678901234
 void lcdShowActive()
 {
+    if (!lcdOk) return;
     for (int b = 0; b < NUM_BOXES; b++)
     {
         char line[LCD_COLS + 1] = "                    ";
@@ -210,6 +212,7 @@ void lcdShowIdle()
 
 void updateLCD()
 {
+    if (!lcdOk) return;
     // Periodic full reinit restores the HD44780 controller after noise-corrupted state
     static unsigned long lastReinit = 0;
     if (millis() - lastReinit >= LCD_REINIT_INTERVAL_MS)
@@ -252,7 +255,7 @@ void publishState(int box, int valve, bool on)
         snprintf(topic, sizeof(topic), "irrigation/box/%d/valve/%d/state", box, valve);
     if (!mqtt.publish(topic, on ? "ON" : "OFF", true))
     { // retained
-        snprintf(pcfErrMsg, sizeof(pcfErrMsg), " MQTT publish failed! ");
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), "MQTT publish failed!");
         pcfErrUntil = millis() + 5000;
     }
 }
@@ -289,7 +292,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
         valveOn[box - 1][valve - 1] = on;
         setRelay(box, valve, on);
         publishState(box, valve, on);
-        lastValveActivityAt = millis();
+        if (on) lastValveActivityAt = millis();
         lcdDirty = true;
     }
     else if (strcmp(topic, "irrigation/pump/set") == 0)
@@ -312,6 +315,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
         {
             log_i("OTA update found, flashing...");
             allOff();
+            publishAllOff();
             lcdLine(0, "  OTA: updating...  ");
             lcdLine(1, "  Do not power off  ");
             lcdLine(2, "");
@@ -367,7 +371,7 @@ void publishHeartbeat()
     if (pumpOn)
         snprintf(active + pos, (int)sizeof(active) - pos > 0 ? sizeof(active) - pos : 0, "pump");
 
-    bool hwOk = pcfOk[0] && pcfOk[1];
+    bool hwOk = pcfOk[0] && pcfOk[1] && rtcOk;
     char payload[160];
     if (active[0] == '\0')
         snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s}",
@@ -398,6 +402,7 @@ bool mqttReconnect()
     publishState(0, -1, pumpOn);
     publishHeartbeat();
     publishHwStatus();
+    hwStatusDirty = false;
     return true;
 }
 
@@ -577,14 +582,16 @@ void loop()
         }
     }
 
-    // Pump safety: stop pump AND all valves if no valve SET command for 30 minutes
+    // Pump safety: stop pump AND all valves if no valve ON command for 30 minutes
     if (pumpOn && millis() - lastValveActivityAt >= PUMP_SAFETY_TIMEOUT_MS)
     {
         allOff();
-        publishAllOff();
-        snprintf(pcfErrMsg, sizeof(pcfErrMsg), " Pump safety stop!  ");
+        if (mqtt.connected())
+            publishAllOff();
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), "Pump safety stop!");
         pcfErrUntil = millis() + 5000;
-        log_e("Pump safety stop: no valve activity for 30 min — all outputs off");
+        log_e("Pump safety stop: no valve ON for %lu min — all outputs off",
+              PUMP_SAFETY_TIMEOUT_MS / 60000UL);
     }
 
     // Publish hw_status immediately when a device goes offline or recovers
@@ -592,6 +599,20 @@ void loop()
     {
         publishHwStatus();
         hwStatusDirty = false;
+    }
+
+    // Periodic RTC re-probe — detect runtime failures / hot-plug recovery
+    static unsigned long lastRtcProbe = 0;
+    if (millis() - lastRtcProbe >= 60000UL)
+    {
+        lastRtcProbe = millis();
+        Wire.beginTransmission(RTC_I2C_ADDR);
+        bool ok = (Wire.endTransmission() == 0);
+        if (ok != rtcOk)
+        {
+            rtcOk = ok;
+            hwStatusDirty = true;
+        }
     }
 
     // Heartbeat every 5 minutes

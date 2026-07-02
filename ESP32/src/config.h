@@ -15,6 +15,7 @@
 #define I2C_SCL 4
 // Lower value reduces glitches on long/noisy cables (try 50000 if problems persist)
 #define I2C_CLOCK_HZ 100000UL
+#define RTC_I2C_ADDR 0x68   // DS3231 fixed address
 
 // ---- PCF8574A relay expanders ----
 #define PCF_ADDR_0  0x38   // Box 1 & 2

@@ -21,6 +21,7 @@ class MQTTClient:
         self._client = mqtt_lib.Client(
             client_id=config.get('client_id', 'irrigation_pi'),
             protocol=mqtt_lib.MQTTv311,
+            callback_api_version=mqtt_lib.CallbackAPIVersion.VERSION1,
         )
         if config.get('username'):
             self._client.username_pw_set(
@@ -28,6 +29,8 @@ class MQTTClient:
             )
 
         self._first_connect = True
+        self._esp32_online = False
+        self._esp32_online_timer: threading.Timer | None = None
         self.on_esp32_online: Callable[[], None] | None = None
 
         self._client.on_connect = self._on_connect
@@ -104,14 +107,21 @@ class MQTTClient:
         if (len(parts) == 2
                 and parts[0] == TOPIC_BASE
                 and parts[1] == 'status'):
-            if payload == 'offline':                 # Fix #15: clear stale retained valve state
+            if payload == 'offline':
+                self._esp32_online = False
                 with self._state_lock:
                     self.state = {'pump': 'OFF'}
                     snapshot = copy.deepcopy(self.state)
                 self.socketio.emit('state_update', snapshot)
-            elif payload == 'online' and self.on_esp32_online:
-                # 1.5 s delay lets the ESP32 finish subscribing before we resend state
-                threading.Timer(1.5, self.on_esp32_online).start()
+            elif payload == 'online':
+                self._esp32_online = True
+                if self.on_esp32_online:
+                    # Cancel any pending timer before starting a new one
+                    if self._esp32_online_timer is not None:
+                        self._esp32_online_timer.cancel()
+                    # 1.5 s delay lets the ESP32 finish subscribing before we resend state
+                    self._esp32_online_timer = threading.Timer(1.5, self.on_esp32_online)
+                    self._esp32_online_timer.start()
             return
 
         if (len(parts) == 3
@@ -126,12 +136,30 @@ class MQTTClient:
         elif (len(parts) == 2
                 and parts[0] == TOPIC_BASE
                 and parts[1] == 'hw_status'):
+            # Ignore retained hw_status delivered after ESP32 goes offline
+            if not self._esp32_online:
+                return
             try:
                 hw = json.loads(payload)
             except Exception:
                 hw = {}
             with self._state_lock:
                 self.state['hw'] = hw
+                snapshot = copy.deepcopy(self.state)
+            self.socketio.emit('state_update', snapshot)
+
+        elif (len(parts) == 2
+                and parts[0] == TOPIC_BASE
+                and parts[1] == 'heartbeat'):
+            try:
+                hb = json.loads(payload)
+            except Exception:
+                hb = {}
+            with self._state_lock:
+                if 'fw' in hb:
+                    self.state['fw'] = hb['fw']
+                if 'hw_ok' in hb:
+                    self.state['hw_ok'] = hb['hw_ok']
                 snapshot = copy.deepcopy(self.state)
             self.socketio.emit('state_update', snapshot)
 
