@@ -18,6 +18,11 @@ class MQTTClient:
         # state[box_str] = {valves: {valve_str: 'ON'/'OFF'}, pump: 'ON'/'OFF'}
         self.state : dict[str, Any] = {'pump': 'OFF'}
 
+        # Arbitrary external topics (e.g. an openHAB-bridged smart plug) that
+        # schedules can gate on. topic -> last known payload.
+        self._gate_topics: set[str] = set()
+        self.gate_state: dict[str, str] = {}
+
         self._client = mqtt_lib.Client(
             client_id=config.get('client_id', 'irrigation_pi'),
             protocol=mqtt_lib.MQTTv311,
@@ -74,6 +79,23 @@ class MQTTClient:
         with self._state_lock:                       # Fix #11: return snapshot, not live ref
             return copy.deepcopy(self.state)
 
+    def subscribe_gate(self, topic: str):
+        """Track an arbitrary external topic (e.g. a smart-plug state) that a
+        schedule can gate on. Idempotent; safe to call before connect()."""
+        with self._state_lock:
+            already = topic in self._gate_topics
+            self._gate_topics.add(topic)
+        if not already and self.connected:
+            self._client.subscribe(topic)
+
+    def get_gate_state(self, topic: str) -> str | None:
+        with self._state_lock:
+            return self.gate_state.get(topic)
+
+    def get_gate_states(self) -> dict[str, str]:
+        with self._state_lock:
+            return dict(self.gate_state)
+
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
@@ -85,6 +107,10 @@ class MQTTClient:
             client.subscribe(f'{TOPIC_BASE}/status')
             client.subscribe(f'{TOPIC_BASE}/heartbeat')
             client.subscribe(f'{TOPIC_BASE}/hw_status')
+            with self._state_lock:
+                gate_topics = set(self._gate_topics)
+            for topic in gate_topics:
+                client.subscribe(topic)
             self.socketio.emit('mqtt_status', {'connected': True})
             print('MQTT connected')
         else:
@@ -98,6 +124,14 @@ class MQTTClient:
         self.socketio.emit('log_entry', {
             'topic': topic, 'payload': payload, 'direction': 'in',
         })
+
+        with self._state_lock:
+            is_gate = topic in self._gate_topics
+            if is_gate:
+                self.gate_state[topic] = payload
+        if is_gate:
+            self.socketio.emit('gate_update', {'topic': topic, 'payload': payload})
+            return
 
         # irrigation/pump/state                     (len=3)
         # irrigation/box/{box}/valve/{valve}/state  (len=6)

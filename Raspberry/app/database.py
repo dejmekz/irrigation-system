@@ -30,11 +30,13 @@ def init_db():
                 created_at TEXT    DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS schedules (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT    NOT NULL,
-                script_id  INTEGER NOT NULL,
-                cron       TEXT    NOT NULL,
-                enabled    INTEGER DEFAULT 1,
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT    NOT NULL,
+                script_id    INTEGER NOT NULL,
+                cron         TEXT    NOT NULL,
+                enabled      INTEGER DEFAULT 1,
+                gate_topic   TEXT,
+                gate_payload TEXT    DEFAULT 'ON',
                 FOREIGN KEY (script_id) REFERENCES scripts(id)
             );
             CREATE TABLE IF NOT EXISTS message_log (
@@ -49,6 +51,12 @@ def init_db():
         for col, defn in [('pump_box', 'INTEGER'), ('pump_delay', 'INTEGER DEFAULT 0')]:
             try:
                 conn.execute(f'ALTER TABLE scripts ADD COLUMN {col} {defn}')
+            except Exception:
+                pass
+        # Migrate existing DB: add gate columns if missing
+        for col, defn in [('gate_topic', 'TEXT'), ('gate_payload', "TEXT DEFAULT 'ON'")]:
+            try:
+                conn.execute(f'ALTER TABLE schedules ADD COLUMN {col} {defn}')
             except Exception:
                 pass
 
@@ -117,6 +125,7 @@ def get_schedules():
     with get_db() as conn:
         rows = conn.execute('''
             SELECT s.id, s.name, s.script_id, s.cron, s.enabled,
+                   s.gate_topic, s.gate_payload,
                    sc.name AS script_name
             FROM schedules s
             JOIN scripts sc ON s.script_id = sc.id
@@ -125,20 +134,24 @@ def get_schedules():
     return [dict(r) for r in rows]
 
 
-def save_schedule(name: str, script_id: int, cron: str, enabled: bool = True):
+def save_schedule(name: str, script_id: int, cron: str, enabled: bool = True,
+                   gate_topic: str | None = None, gate_payload: str = 'ON'):
     with get_db() as conn:
         cur = conn.execute(
-            'INSERT INTO schedules (name, script_id, cron, enabled) VALUES (?, ?, ?, ?)',
-            (name, script_id, cron, int(enabled)),
+            'INSERT INTO schedules (name, script_id, cron, enabled, gate_topic, gate_payload) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (name, script_id, cron, int(enabled), gate_topic, gate_payload),
         )
         return cur.lastrowid
 
 
-def update_schedule(sched_id: int, name: str, script_id: int, cron: str, enabled: bool = True):
+def update_schedule(sched_id: int, name: str, script_id: int, cron: str, enabled: bool = True,
+                     gate_topic: str | None = None, gate_payload: str = 'ON'):
     with get_db() as conn:
         conn.execute(
-            'UPDATE schedules SET name=?, script_id=?, cron=?, enabled=? WHERE id=?',
-            (name, script_id, cron, int(enabled), sched_id),
+            'UPDATE schedules SET name=?, script_id=?, cron=?, enabled=?, gate_topic=?, gate_payload=? '
+            'WHERE id=?',
+            (name, script_id, cron, int(enabled), gate_topic, gate_payload, sched_id),
         )
 
 

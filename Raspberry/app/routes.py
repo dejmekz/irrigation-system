@@ -163,6 +163,8 @@ def api_save_schedule():
     sched_id = database.save_schedule(
         data['name'], data['script_id'], data['cron'],
         data.get('enabled', True),
+        gate_topic=(data.get('gate_topic') or '').strip() or None,
+        gate_payload=(data.get('gate_payload') or '').strip() or 'ON',
     )
     current_app.extensions['scheduler'].reload_schedule(sched_id)
     return jsonify({'id': sched_id})
@@ -179,6 +181,8 @@ def api_update_schedule(sched_id):
     database.update_schedule(
         sched_id, data['name'], data['script_id'], data['cron'],
         data.get('enabled', True),
+        gate_topic=(data.get('gate_topic') or '').strip() or None,
+        gate_payload=(data.get('gate_payload') or '').strip() or 'ON',
     )
     current_app.extensions['scheduler'].reload_schedule(sched_id)
     return jsonify({'ok': True})
@@ -189,6 +193,11 @@ def api_delete_schedule(sched_id):
     database.delete_schedule(sched_id)
     current_app.extensions['scheduler'].remove_schedule(sched_id)
     return jsonify({'ok': True})
+
+
+@main_bp.route('/api/gates')
+def api_gates():
+    return jsonify(current_app.extensions['mqtt'].get_gate_states())
 
 
 # ---------- Log ----------

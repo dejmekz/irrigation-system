@@ -26,6 +26,10 @@ class IrrigationScheduler:
 
     def load_schedules(self):
         for sched in database.get_schedules():
+            # Subscribe regardless of enabled state so the gate badge and
+            # last-known value are ready before a schedule gets turned on.
+            if sched.get('gate_topic'):
+                self.mqtt.subscribe_gate(sched['gate_topic'])
             if sched['enabled']:
                 self._register(sched)
 
@@ -34,17 +38,35 @@ class IrrigationScheduler:
         if len(parts) != 5:
             return
         minute, hour, day, month, dow = parts
+        gate_topic = sched.get('gate_topic')
+        if gate_topic:
+            self.mqtt.subscribe_gate(gate_topic)
         try:                                         # Fix #7: catch invalid cron fields
             self._scheduler.add_job(
-                self.run_script,
+                self._run_scheduled,
                 CronTrigger(minute=minute, hour=hour, day=day,
                             month=month, day_of_week=dow),
-                args=[sched['script_id']],
+                args=[sched['script_id'], gate_topic, sched.get('gate_payload') or 'ON'],
                 id=f"sched_{sched['id']}",
                 replace_existing=True,
             )
         except Exception as exc:
             print(f"Invalid cron for schedule {sched['id']} ({sched['cron']}): {exc}")
+
+    def _run_scheduled(self, script_id: int, gate_topic: str | None, gate_payload: str):
+        """Cron entry point: skip the run if the schedule is gated on an
+        external MQTT topic (e.g. a smart plug) that isn't in the expected state."""
+        if gate_topic:
+            current = self.mqtt.get_gate_state(gate_topic)
+            if current != gate_payload:
+                msg = (f'Schedule skipped: {gate_topic} = {current!r} '
+                       f'(expected {gate_payload!r})')
+                database.log_message('system/gate', msg, 'sys')
+                self.socketio.emit('log_entry', {
+                    'topic': 'system/gate', 'payload': msg, 'direction': 'sys',
+                })
+                return
+        self.run_script(script_id)
 
     def reload_schedule(self, sched_id):
         try:
@@ -52,8 +74,11 @@ class IrrigationScheduler:
         except Exception:
             pass
         for sched in database.get_schedules():
-            if sched['id'] == sched_id and sched['enabled']:
-                self._register(sched)
+            if sched['id'] == sched_id:
+                if sched.get('gate_topic'):
+                    self.mqtt.subscribe_gate(sched['gate_topic'])
+                if sched['enabled']:
+                    self._register(sched)
                 break
 
     def remove_schedule(self, sched_id):
