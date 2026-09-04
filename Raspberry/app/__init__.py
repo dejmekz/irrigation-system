@@ -51,6 +51,7 @@ def create_app(config_path: str = 'config.yaml') -> Flask:
     scheduler: IrrigationScheduler = IrrigationScheduler(
         mqtt_client, socketio,
         max_script_duration=config['system'].get('max_script_duration', 7200),
+        offline_grace=config['system'].get('controller_offline_grace', 60),
     )
     scheduler.start()
     scheduler.load_schedules()

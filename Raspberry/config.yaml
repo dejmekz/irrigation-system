@@ -15,6 +15,11 @@ system:
   # latches any valve held open this long, so a script that would exceed it is
   # rejected at save time rather than silently running dry for the remainder.
   valve_max_on: 3600         # seconds
+  # How long the ESP32 may be unreachable mid-run before the run is reported as
+  # failed rather than completed. Short outages are genuinely recovered: the
+  # firmware closes its valves after WIFI_ACTIVE_SAFETY_MS and the Pi re-asserts
+  # state on reconnect, so a reboot cycle (~10-20 s) should not fail a run.
+  controller_offline_grace: 60  # seconds
 
 web:
   host: "0.0.0.0"

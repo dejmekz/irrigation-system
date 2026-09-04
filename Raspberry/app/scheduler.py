@@ -25,7 +25,8 @@ MISFIRE_GRACE_S = 300
 
 
 class IrrigationScheduler:
-    def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO, max_script_duration: int = 7200):
+    def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO,
+                 max_script_duration: int = 7200, offline_grace: int = 60):
         self.mqtt = mqtt_client
         self.socketio = socketio
         self._scheduler = BackgroundScheduler(
@@ -39,10 +40,15 @@ class IrrigationScheduler:
         self._pump_open: bool = False
         self._last_keepalive: float = 0.0
         self._max_duration = max_script_duration
+        self._offline_grace = offline_grace
         # Publishes that never left the MQTT client during the current run.
         # A run that watered nothing because the broker was down must not be
         # recorded as 'completed'.
         self._publish_failures = 0
+        # Seconds of the current run during which the ESP32 was unreachable, and
+        # whether any of that overlapped valves this script had opened.
+        self._offline_seconds = 0
+        self._offline_while_open = False
 
     def start(self):
         self._scheduler.add_listener(self._on_job_missed, EVENT_JOB_MISSED)
@@ -163,6 +169,36 @@ class IrrigationScheduler:
             with self._lock:
                 self._publish_failures += 1
 
+    def _sample_controller(self):
+        """Notice the controller going away mid-run. Checking only at the start
+        is not enough: the broker keeps accepting publishes after the ESP32
+        drops, so every command still reports success while nothing acts on it,
+        and the run finishes looking clean.
+
+        This deliberately only observes. A short outage is genuinely recovered —
+        the firmware closes its own valves once WiFi has been gone for
+        WIFI_ACTIVE_SAFETY_MS, and resync_to_esp32 re-asserts what the script
+        had open when it reconnects — so aborting on any blip would fight that
+        design and stop watering that would otherwise have resumed."""
+        if self.mqtt.esp32_status() is True:
+            return
+        with self._lock:
+            self._offline_seconds += 1
+            first = self._offline_seconds == 1
+            if self._open_valves or self._pump_open:
+                self._offline_while_open = True
+            name = self._running
+        # Once per run: enough to timestamp the drop in the log without adding a
+        # line every second for the whole outage.
+        if first and name:
+            msg = (f'Controller went offline during "{name}" — commands are '
+                   f'reaching nothing until it returns')
+            print(msg)
+            database.log_message('system/offline', msg, 'sys')
+            self.socketio.emit('log_entry', {
+                'topic': 'system/offline', 'payload': msg, 'direction': 'sys',
+            })
+
     def _sleep(self, seconds: int):
         """Sleep in 1 s ticks, returning early once a stop is requested, and
         re-asserting open valve/pump state every KEEPALIVE_INTERVAL_S."""
@@ -170,6 +206,7 @@ class IrrigationScheduler:
             if self._stop_event.is_set():
                 return
             time.sleep(1)
+            self._sample_controller()
             self._keepalive()
 
     def _keepalive(self):
@@ -220,6 +257,8 @@ class IrrigationScheduler:
                 self._running = script['name']
                 self._last_keepalive = time.monotonic()
                 self._publish_failures = 0
+                self._offline_seconds = 0
+                self._offline_while_open = False
         if blocked_by is not None:
             # Recorded rather than silently dropped: "the 20:00 run never
             # happened because the 19:40 one was still going" is exactly the
@@ -357,20 +396,36 @@ class IrrigationScheduler:
                     self._pump_open = False
                     self._running = None
                     failures = self._publish_failures
+                    offline_s = self._offline_seconds
+                    offline_open = self._offline_while_open
 
                 if outcome == 'completed' and self._stop_event.is_set():
                     outcome = 'stopped'
                     detail = (f'exceeded max_script_duration ({self._max_duration}s)'
                               if watchdog_fired.is_set() else 'stopped manually')
-                # A command that never left the MQTT client did not reach a valve.
-                # Report that rather than letting the run look like a clean success.
+                # Everything below means some part of this run did not reach the
+                # valves. Collect the reasons first, then decide the outcome once.
+                notes: list[str] = []
+                degrade = False
                 if failures:
-                    note = (f'{failures} MQTT command(s) never left the client — '
-                            f'the controller may not have received them')
-                    if outcome == 'completed':
-                        outcome, detail = 'error', note
+                    notes.append(f'{failures} MQTT command(s) never left the client — '
+                                 f'the controller may not have received them')
+                    degrade = True
+                if offline_s > self._offline_grace:
+                    where = ' while valves were open' if offline_open else ''
+                    notes.append(f'controller was unreachable for {offline_s}s{where} — '
+                                 f'commands sent during that time reached nothing')
+                    degrade = True
+                elif offline_s:
+                    # Inside the grace window: worth recording, not worth failing.
+                    notes.append(f'controller was briefly unreachable ({offline_s}s); '
+                                 f'open valves were re-asserted on reconnect')
+                if notes:
+                    joined = '; '.join(notes)
+                    if degrade and outcome == 'completed':
+                        outcome, detail = 'error', joined
                     else:
-                        detail = f'{detail}; {note}' if detail else note
+                        detail = f'{detail}; {joined}' if detail else joined
                 database.finish_run(run_id, outcome, detail)
 
                 self.socketio.emit('script_status', {
