@@ -35,7 +35,7 @@ Firmware can be updated over WiFi without a USB connection. The ESP32 checks the
 
 ### How it works
 
-1. Both `manifest.json` and `irrigation.bin` live in a directory served **statically by Apache** on port 80 (`/var/www/html/firmware/` on the Pi), configured under `firmware:` in `config.yaml`. They are deliberately *not* served by Flask: the Werkzeug dev server truncates a 1 MB download to a client as slow as the ESP32, and the image then fails its checksum and rolls back. Flask still owns `/firmware/upload` and `/firmware/trigger`.
+1. Both `manifest.json` and `irrigation.bin` live in a directory served **statically by nginx** on port 8090 (`/var/www/html/firmware/` on the Pi; see `Raspberry/nginx-firmware.conf`), configured under `firmware:` in `config.yaml`. Port 8090 because Apache already owns :80 on that host. They are deliberately *not* served by Flask: the Werkzeug dev server truncates a 1 MB download to a client as slow as the ESP32, and the image then fails its checksum and rolls back. Flask still owns `/firmware/upload` and `/firmware/trigger`.
 2. On `irrigation/cmd/ota_update`, the ESP32 fetches `OTA_MANIFEST_URL` and compares its `FIRMWARE_VERSION` against the manifest. If the manifest version is higher, it downloads the binary from the manifest's `host`/`port` and flashes it, then reboots.
 
 ### Deploy workflow
@@ -64,7 +64,7 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/firmware/manifest.json` | Manifest (fallback; the ESP32 reads Apache's copy) |
+| `GET` | `/firmware/manifest.json` | Manifest (fallback; the ESP32 reads nginx's copy) |
 | `GET` | `/firmware/irrigation.bin` | Binary (fallback only — **not** the OTA path) |
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`), increments manifest version |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
@@ -147,4 +147,4 @@ Key constants — edit here rather than in code:
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
 | `FIRMWARE_VERSION` | 11 | Bump before every OTA release build |
-| `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |
+| `OTA_MANIFEST_URL` | `http://raspi4server.local:8090/firmware/manifest.json` | Manifest URL (nginx, port 8090) |
