@@ -1,9 +1,33 @@
 import sqlite3
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 DB_PATH = str(Path(__file__).parent.parent / 'irrigation.db')
+
+# SQLite's datetime('now') is UTC, but every page that shows a timestamp is read
+# against a wall clock. Rows stay UTC on disk (unambiguous, and unaffected by DST
+# or a timezone change); they are converted to local time on the way out, so
+# existing rows render correctly too.
+_TS_FMT = '%Y-%m-%d %H:%M:%S'
+
+
+def _local_ts(ts: Any) -> Any:
+    if not isinstance(ts, str):
+        return ts
+    try:
+        utc = datetime.strptime(ts, _TS_FMT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ts
+    return utc.astimezone().strftime(_TS_FMT)
+
+
+def _localise(row: dict[str, Any], *fields: str) -> dict[str, Any]:
+    for f in fields:
+        if f in row:
+            row[f] = _local_ts(row[f])
+    return row
 
 
 def get_db():
@@ -81,13 +105,13 @@ def get_logs(limit: int = 200):
         rows = conn.execute(
             'SELECT * FROM message_log ORDER BY id DESC LIMIT ?', (limit,)
         ).fetchall()
-    return [dict(r) for r in rows]
+    return [_localise(dict(r), 'ts') for r in rows]
 
 
 def get_scripts():
     with get_db() as conn:
         rows = conn.execute('SELECT * FROM scripts ORDER BY name').fetchall()
-    return [dict(r) for r in rows]
+    return [_localise(dict(r), 'created_at') for r in rows]
 
 
 def get_script(script_id: int):
@@ -95,7 +119,7 @@ def get_script(script_id: int):
         row = conn.execute(
             'SELECT * FROM scripts WHERE id = ?', (script_id,)
         ).fetchone()
-    return dict(row) if row else None
+    return _localise(dict(row), 'created_at') if row else None
 
 
 def save_script(name: str, steps: list[dict[str, Any]], pump_box: int | None = None, pump_delay: int = 0):
