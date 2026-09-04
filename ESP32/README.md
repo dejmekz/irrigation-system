@@ -35,8 +35,8 @@ Firmware can be updated over WiFi without a USB connection. The ESP32 checks the
 
 ### How it works
 
-1. The Pi serves `firmware/manifest.json` (version number) and `firmware/irrigation.bin`.
-2. On `irrigation/cmd/ota_update`, the ESP32 compares its `FIRMWARE_VERSION` against the manifest. If the manifest version is higher, it downloads and flashes the binary, then reboots.
+1. Both `manifest.json` and `irrigation.bin` live in a directory served **statically by Apache** on port 80 (`/var/www/html/firmware/` on the Pi), configured under `firmware:` in `config.yaml`. They are deliberately *not* served by Flask: the Werkzeug dev server truncates a 1 MB download to a client as slow as the ESP32, and the image then fails its checksum and rolls back. Flask still owns `/firmware/upload` and `/firmware/trigger`.
+2. On `irrigation/cmd/ota_update`, the ESP32 fetches `OTA_MANIFEST_URL` and compares its `FIRMWARE_VERSION` against the manifest. If the manifest version is higher, it downloads the binary from the manifest's `host`/`port` and flashes it, then reboots.
 
 ### Deploy workflow
 
@@ -45,7 +45,8 @@ Firmware can be updated over WiFi without a USB connection. The ESP32 checks the
 # 2. Build
 cd ESP32 && pio run
 
-# 3. Upload binary to Pi (auto-increments manifest version)
+# 3. Upload binary to Pi (writes to the Apache-served dir, bumps the manifest
+#    version and re-stamps its host/port)
 curl -F "firmware=@.pio/build/esp32c3/firmware.bin" \
      http://raspi4server.local:5000/firmware/upload
 
@@ -55,14 +56,16 @@ curl -X POST http://raspi4server.local:5000/firmware/trigger
 mosquitto_pub -h raspi4server.local -t irrigation/cmd/ota_update -m trigger
 ```
 
+Trigger the OTA on a **quiet server** — the manifest is small, but avoid downloading the binary yourself or leaving the dashboard polling while the flash runs.
+
 During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP32 reboots automatically on success. If the update fails it reboots back to the existing firmware.
 
 ### Pi endpoints
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/firmware/manifest.json` | Current version manifest read by ESP32 |
-| `GET` | `/firmware/irrigation.bin` | Binary served to ESP32 during OTA |
+| `GET` | `/firmware/manifest.json` | Manifest (fallback; the ESP32 reads Apache's copy) |
+| `GET` | `/firmware/irrigation.bin` | Binary (fallback only — **not** the OTA path) |
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`), increments manifest version |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
@@ -143,5 +146,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 10 | Bump before every OTA release build |
-| `OTA_MANIFEST_URL` | `http://raspi4server.local:5000/firmware/manifest.json` | Pi manifest URL |
+| `FIRMWARE_VERSION` | 11 | Bump before every OTA release build |
+| `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |

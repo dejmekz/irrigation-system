@@ -4,14 +4,29 @@ from flask import Blueprint, send_from_directory, request, jsonify, current_app
 
 firmware_bp = Blueprint('firmware', __name__)
 
-FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'firmware')
-MANIFEST_PATH = os.path.join(FIRMWARE_DIR, 'manifest.json')
+# Fallback for local development when no directory is configured.
+_DEFAULT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'firmware')
+
+
+def _cfg() -> dict:
+    return current_app.config.get('FW_CFG') or {}
+
+
+def firmware_dir() -> str:
+    """Where irrigation.bin and manifest.json live. In production this is a
+    directory served statically by Apache: the Flask dev server truncates a 1 MB
+    download to a slow client like the ESP32, which fails the OTA image check."""
+    return _cfg().get('dir') or _DEFAULT_DIR
+
+
+def manifest_path() -> str:
+    return os.path.join(firmware_dir(), 'manifest.json')
 
 
 @firmware_bp.route('/firmware/manifest.json')
 def manifest():
     try:
-        with open(MANIFEST_PATH) as f:
+        with open(manifest_path()) as f:
             return jsonify(json.load(f))
     except FileNotFoundError:
         return jsonify({'error': 'manifest not found'}), 404
@@ -19,7 +34,9 @@ def manifest():
 
 @firmware_bp.route('/firmware/irrigation.bin')
 def binary():
-    return send_from_directory(FIRMWARE_DIR, 'irrigation.bin')
+    # Kept as a fallback only. The manifest points the ESP32 at the static
+    # server instead, so this path is not used by a normal OTA.
+    return send_from_directory(firmware_dir(), 'irrigation.bin')
 
 
 @firmware_bp.route('/firmware/upload', methods=['POST'])
@@ -27,22 +44,38 @@ def upload():
     if 'firmware' not in request.files:
         return jsonify({'error': 'missing field: firmware'}), 400
     f = request.files['firmware']
-    os.makedirs(FIRMWARE_DIR, exist_ok=True)
-    f.save(os.path.join(FIRMWARE_DIR, 'irrigation.bin'))
+
+    cfg = _cfg()
+    fw_dir = firmware_dir()
+    os.makedirs(fw_dir, exist_ok=True)
+
+    # Write via a temp file and rename: the static server reads this directory
+    # directly, so an in-flight OTA must never see a half-written image.
+    target = os.path.join(fw_dir, 'irrigation.bin')
+    tmp = target + '.part'
+    f.save(tmp)
+    os.replace(tmp, target)
 
     try:
-        with open(MANIFEST_PATH) as mf:
+        with open(manifest_path()) as mf:
             data = json.load(mf)
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
         data = {'type': 'irrigation-esp32c3', 'version': 0,
-                'host': 'raspi4server.local', 'port': 5000,
                 'bin': '/firmware/irrigation.bin'}
 
-    data['version'] += 1
-    with open(MANIFEST_PATH, 'w') as mf:
-        json.dump(data, mf, indent=2)
+    data['version'] = int(data.get('version', 0)) + 1
+    # Always re-assert where the binary is actually served from, so the manifest
+    # cannot drift away from the configured static host.
+    data['host'] = cfg.get('host', 'raspi4server.local')
+    data['port'] = int(cfg.get('port', 80))
 
-    return jsonify({'ok': True, 'version': data['version']})
+    tmp_manifest = manifest_path() + '.part'
+    with open(tmp_manifest, 'w') as mf:
+        json.dump(data, mf, indent=2)
+    os.replace(tmp_manifest, manifest_path())
+
+    return jsonify({'ok': True, 'version': data['version'],
+                    'host': data['host'], 'port': data['port']})
 
 
 @firmware_bp.route('/firmware/trigger', methods=['POST'])

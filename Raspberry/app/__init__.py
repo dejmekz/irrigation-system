@@ -24,10 +24,16 @@ def create_app(config_path: str = 'config.yaml') -> Flask:
     mqtt_cfg['username'] = os.getenv('MQTT_USER', mqtt_cfg.get('username', ''))
     mqtt_cfg['password'] = os.getenv('MQTT_PASS', mqtt_cfg.get('password', ''))
 
+    fw_cfg = config.get('firmware', {}) or {}
+    fw_cfg['dir'] = os.getenv('FIRMWARE_DIR', fw_cfg.get('dir', ''))
+    fw_cfg['host'] = os.getenv('FIRMWARE_HOST', fw_cfg.get('host', 'raspi4server.local'))
+    fw_cfg['port'] = int(os.getenv('FIRMWARE_PORT', fw_cfg.get('port', 80)))
+
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', config['web']['secret_key'])
     app.config['MQTT_CFG'] = mqtt_cfg
     app.config['SYS_CFG'] = config['system']
     app.config['WEB_CFG'] = config['web']
+    app.config['FW_CFG'] = fw_cfg
 
     socketio.init_app(app, async_mode='threading', cors_allowed_origins='*')
 
