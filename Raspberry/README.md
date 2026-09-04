@@ -14,7 +14,10 @@ Flask-based service that controls an irrigation system via MQTT and a real-time 
 
 - Flask + Flask-SocketIO — web UI with real-time WebSocket updates
 - paho-mqtt 2.x — MQTT client
-- APScheduler — cron-based irrigation schedules
+- APScheduler — cron-based irrigation schedules. While a script runs, the state of
+  every open valve and the pump is re-published every `KEEPALIVE_INTERVAL_S` (5 min)
+  so a command lost during an ESP32 reboot self-heals and the firmware's pump
+  dry-run timer stays refreshed.
 - SQLite — scripts, schedules, message log
 - python-dotenv — credentials loaded from `.env`
 - Bootstrap 5.3 + vanilla JS — frontend
@@ -23,9 +26,9 @@ Flask-based service that controls an irrigation system via MQTT and a real-time 
 
 | Topic | Direction | Values |
 |---|---|---|
-| `irrigation/box/{1-4}/valve/{1-3}/set` | → publish | `ON` / `OFF` |
+| `irrigation/box/{1-4}/valve/{1-3}/set` | → publish | `ON` / `OFF` (QoS 1) |
 | `irrigation/box/{1-4}/valve/{1-3}/state` | ← subscribe | `ON` / `OFF` |
-| `irrigation/pump/set` | → publish | `ON` / `OFF` |
+| `irrigation/pump/set` | → publish | `ON` / `OFF` (QoS 1) |
 | `irrigation/pump/state` | ← subscribe | `ON` / `OFF` |
 | `irrigation/status` | ← subscribe | `online` / `offline` |
 | `irrigation/heartbeat` | ← subscribe | JSON |

@@ -17,6 +17,16 @@ static const uint8_t PCF_ADDR[2] = {PCF_ADDR_0, PCF_ADDR_1};
 static bool valveOn[NUM_BOXES][VALVES_PER_BOX] = {};
 static bool pumpOn = false;
 
+// millis() of the OFF->ON transition of each valve, for the VALVE_MAX_ON_MS
+// safety cap. Only meaningful while the matching valveOn[][] is true.
+static unsigned long valveOnAt[NUM_BOXES][VALVES_PER_BOX] = {};
+
+// Set when the VALVE_MAX_ON_MS cap closed a valve. A latched valve refuses to
+// reopen until an explicit OFF (or stop_all, or a reboot) clears it — otherwise
+// the Pi's keepalive re-publish would resurrect it every few minutes and the cap
+// would just cycle forever instead of stopping the water.
+static bool valveLatched[NUM_BOXES][VALVES_PER_BOX] = {};
+
 // ---- Hardware health ----
 static bool rtcOk = false;
 static bool pcfOk[2] = {false, false};
@@ -108,6 +118,8 @@ void allOff()
         log_e("allOff: PCF I2C write failed — relays may still be active!");
     }
     memset(valveOn, 0, sizeof(valveOn));
+    memset(valveOnAt, 0, sizeof(valveOnAt));
+    memset(valveLatched, 0, sizeof(valveLatched));
     pumpOn = false;
     lcdDirty = true;
 }
@@ -125,15 +137,18 @@ void lcdLine(int row, const char *text)
     lcd.print(buf);
 }
 
-bool anyActive()
+bool anyValveOpen()
 {
-    if (pumpOn)
-        return true;
     for (int b = 0; b < NUM_BOXES; b++)
         for (int v = 0; v < VALVES_PER_BOX; v++)
             if (valveOn[b][v])
                 return true;
     return false;
+}
+
+bool anyActive()
+{
+    return pumpOn || anyValveOpen();
 }
 
 // Active view — one row per box:
@@ -268,6 +283,35 @@ void publishAllOff()
     publishState(0, -1, false);
 }
 
+// box 1-4, valve 1-3 — the one place a valve transition is applied: keeps the
+// safety-cap stamp, the relay, the LCD mirror and the published state in step.
+void setValve(int box, int valve, bool on)
+{
+    if (on && valveLatched[box - 1][valve - 1])
+    {
+        // Re-publish OFF so the Pi's view stays truthful about the refusal.
+        publishState(box, valve, false);
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), "B%d V%d latched off", box, valve);
+        pcfErrUntil = millis() + 5000;
+        log_w("Valve B%d:V%d ON ignored - latched by safety timer until OFF", box, valve);
+        return;
+    }
+    if (!on)
+        valveLatched[box - 1][valve - 1] = false;
+
+    bool wasOn = valveOn[box - 1][valve - 1];
+    valveOn[box - 1][valve - 1] = on;
+    // Stamp on the OFF->ON edge only, so a repeated ON (the Pi's keepalive
+    // re-publish) cannot push out the absolute open-time cap.
+    if (on && !wasOn)
+        valveOnAt[box - 1][valve - 1] = millis();
+    setRelay(box, valve, on);
+    publishState(box, valve, on);
+    if (on)
+        lastValveActivityAt = millis();
+    lcdDirty = true;
+}
+
 void setPump(bool on)
 {
 #if RELAY_ACTIVE_LOW
@@ -289,11 +333,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
 
     if (sscanf(topic, "irrigation/box/%d/valve/%d/set", &box, &valve) == 2 && box >= 1 && box <= NUM_BOXES && valve >= 1 && valve <= VALVES_PER_BOX)
     {
-        valveOn[box - 1][valve - 1] = on;
-        setRelay(box, valve, on);
-        publishState(box, valve, on);
-        if (on) lastValveActivityAt = millis();
-        lcdDirty = true;
+        setValve(box, valve, on);
     }
     else if (strcmp(topic, "irrigation/pump/set") == 0)
     {
@@ -393,9 +433,14 @@ bool mqttReconnect()
     }
     log_i("MQTT connected");
     mqtt.publish(MQTT_STATUS_TOPIC, "online", true);
-    mqtt.subscribe("irrigation/box/+/valve/+/set");
-    mqtt.subscribe("irrigation/pump/set");
-    mqtt.subscribe("irrigation/cmd/+");
+    // QoS 1: the broker delivers at min(publish QoS, subscription QoS), so
+    // subscribing at 0 would silently downgrade the Pi's QoS 1 commands back to
+    // fire-and-forget. PubSubClient always connects with cleanSession=true, so
+    // nothing is queued for us while we are offline — stale valve commands are
+    // never replayed after a reboot, which is what we want.
+    mqtt.subscribe("irrigation/box/+/valve/+/set", 1);
+    mqtt.subscribe("irrigation/pump/set", 1);
+    mqtt.subscribe("irrigation/cmd/+", 1);
     for (int b = 1; b <= NUM_BOXES; b++)
         for (int v = 1; v <= VALVES_PER_BOX; v++)
             publishState(b, v, valveOn[b - 1][v - 1]);
@@ -579,6 +624,35 @@ void loop()
             lastMqttRetry = millis();
             log_w("MQTT lost, reconnecting...");
             mqttReconnect();
+        }
+    }
+
+    // Valve max-open safety — the last-resort dead-man's switch. Unlike the WiFi
+    // and pump watchdogs below this fires even when WiFi, MQTT and the pump are
+    // all healthy, so a crashed or hung Pi cannot leave a valve open forever.
+    bool safetyClosedValve = false;
+    for (int b = 0; b < NUM_BOXES; b++)
+        for (int v = 0; v < VALVES_PER_BOX; v++)
+            if (valveOn[b][v] && millis() - valveOnAt[b][v] >= VALVE_MAX_ON_MS)
+            {
+                setValve(b + 1, v + 1, false);
+                valveLatched[b][v] = true;   // must be set after the OFF clears it
+                safetyClosedValve = true;
+                log_e("Valve B%d:V%d open > %lu min - closed by safety timer",
+                      b + 1, v + 1, VALVE_MAX_ON_MS / 60000UL);
+            }
+
+    if (safetyClosedValve)
+    {
+        snprintf(pcfErrMsg, sizeof(pcfErrMsg), "Valve max time stop!");
+        pcfErrUntil = millis() + 5000;
+        // Don't leave the pump running dry once the safety timer took the last
+        // valve away. Only on this path — a pump legitimately runs with no valve
+        // open during a script's configured pump start delay.
+        if (pumpOn && !anyValveOpen())
+        {
+            setPump(false);
+            log_e("Pump stopped: last valve was closed by the safety timer");
         }
     }
 

@@ -20,11 +20,11 @@ Relay boards are **active-LOW** (`RELAY_ACTIVE_LOW true` in `config.h`).
 
 | Topic | Direction | Values | Notes |
 |---|---|---|---|
-| `irrigation/box/{1-4}/valve/{1-3}/set` | ← subscribe | `ON` / `OFF` | Command from Pi |
+| `irrigation/box/{1-4}/valve/{1-3}/set` | ← subscribe | `ON` / `OFF` | Command from Pi, QoS 1 |
 | `irrigation/box/{1-4}/valve/{1-3}/state` | → publish | `ON` / `OFF` | Retained state |
-| `irrigation/pump/set` | ← subscribe | `ON` / `OFF` | Command from Pi |
+| `irrigation/pump/set` | ← subscribe | `ON` / `OFF` | Command from Pi, QoS 1 |
 | `irrigation/pump/state` | → publish | `ON` / `OFF` | Retained state |
-| `irrigation/cmd/stop_all` | ← subscribe | any | Emergency stop |
+| `irrigation/cmd/stop_all` | ← subscribe | any | Emergency stop, QoS 1 |
 | `irrigation/cmd/ota_update` | ← subscribe | any | Trigger OTA firmware update |
 | `irrigation/status` | → publish | `online` / `offline` | LWT |
 | `irrigation/heartbeat` | → publish | JSON | Every 5 minutes |
@@ -72,6 +72,8 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 
 ## Safety Features
 
+- **Valve max-open cap** — every valve is closed automatically once it has been open for `VALVE_MAX_ON_MS` (60 min), and the pump is stopped with it if that was the last open valve. This is the last-resort dead-man's switch: it fires even when WiFi, MQTT and the pump are all healthy, so a crashed or hung Pi controller cannot leave a valve open indefinitely. The timer starts on the OFF→ON transition and is *not* extended by the Pi's keepalive re-publishes. A valve closed this way is **latched**: further `ON` commands are refused (and answered with a retained `OFF` state) until an explicit `OFF`, a `stop_all`, or a reboot clears it, so a keepalive cannot silently reopen it.
+- **Pump dry-run shutoff** — if no valve `set` command arrives for `PUMP_SAFETY_TIMEOUT_MS` (30 min) while the pump is running, everything is turned off. The Pi re-asserts the state of open valves every 5 minutes while a script runs, so steps longer than this are not cut short.
 - **WiFi safety shutoff** — if WiFi is lost while any valve or pump is active and stays lost for `WIFI_ACTIVE_SAFETY_MS` (30 s), all outputs are turned off automatically.
 - **Hardware task watchdog** — reboots the ESP32 if `loop()` stalls for longer than `TASK_WDT_TIMEOUT_S` (60 s).
 - **Retained MQTT state** — all state topics are published as retained messages; after reconnect the Pi immediately receives current state.
@@ -134,8 +136,10 @@ Key constants — edit here rather than in code:
 | `LCD_REINIT_INTERVAL_MS` | 60 000 | Period between full LCD reinit (noise recovery) |
 | `WIFI_RETRY_INTERVAL_MS` | 10 000 | Interval between WiFi reconnect attempts |
 | `WIFI_ACTIVE_SAFETY_MS` | 30 000 | Max WiFi-loss duration before emergency stop |
+| `PUMP_SAFETY_TIMEOUT_MS` | 1 800 000 | Pump dry-run timeout (30 min) |
+| `VALVE_MAX_ON_MS` | 3 600 000 | Absolute cap on how long one valve may stay open (60 min) |
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 1 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 9 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local:5000/firmware/manifest.json` | Pi manifest URL |

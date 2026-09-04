@@ -41,7 +41,7 @@
 // ---- OTA ----
 // Bump FIRMWARE_VERSION before every release build, then upload the new .bin to the Pi.
 // The Pi manifest version must match for the ESP32 to recognise it as an update.
-#define FIRMWARE_VERSION  8
+#define FIRMWARE_VERSION  9
 #define FIRMWARE_TYPE     "irrigation-esp32c3"
 #define OTA_MANIFEST_URL  "http://raspi4server.local:5000/firmware/manifest.json"
 
@@ -55,3 +55,9 @@
 #define TASK_WDT_TIMEOUT_S     60
 // Stop pump if no valve SET command received for this long while pump is on
 #define PUMP_SAFETY_TIMEOUT_MS 1800000UL  // 30 minutes
+// Absolute cap on how long a single valve may stay open. This is the last-resort
+// dead-man's switch: it fires even when WiFi and MQTT are healthy and the pump is
+// off, so a crashed or hung Pi controller cannot leave a valve open indefinitely.
+// Timed from the OFF->ON transition only — the Pi's periodic keepalive re-publish
+// deliberately does NOT extend it. Must exceed the longest legitimate single step.
+#define VALVE_MAX_ON_MS        3600000UL  // 60 minutes

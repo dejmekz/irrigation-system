@@ -8,6 +8,12 @@ from typing import Any, Callable
 
 TOPIC_BASE = 'irrigation'
 
+# Commands must not be fire-and-forget: a dropped valve OFF leaves water running
+# with nothing to retry it, and a dropped stop_all is an emergency button that
+# silently did nothing. The ESP32 subscribes at QoS 1 to match — the broker
+# delivers at min(publish QoS, subscription QoS).
+QOS_COMMAND = 1
+
 
 class MQTTClient:
     def __init__(self, config : dict[str, str], socketio : SocketIO):
@@ -53,27 +59,37 @@ class MQTTClient:
         except Exception as exc:
             print(f'MQTT connect error: {exc}')
 
-    def publish(self, topic, payload):
-        self._client.publish(topic, payload)
-        log_message(topic, payload, 'out')
+    def publish(self, topic, payload, qos: int = QOS_COMMAND) -> bool:
+        """Publish and report whether the message actually left the client.
+        A failed publish is logged as 'err' rather than 'out' so the message log
+        never claims a command was sent when it wasn't."""
+        info = self._client.publish(topic, payload, qos=qos)
+        ok = info.rc == mqtt_lib.MQTT_ERR_SUCCESS
+        if ok:
+            logged, direction = payload, 'out'
+        else:
+            logged, direction = f'{payload}  [publish failed rc={info.rc}]', 'err'
+            print(f'MQTT publish failed rc={info.rc}: {topic} = {payload!r}')
+        log_message(topic, logged, direction)
         self.socketio.emit('log_entry', {
-            'topic': topic, 'payload': payload, 'direction': 'out',
+            'topic': topic, 'payload': logged, 'direction': direction,
         })
+        return ok
 
-    def set_valve(self, box, valve, on: bool):
-        self.publish(
+    def set_valve(self, box, valve, on: bool) -> bool:
+        return self.publish(
             f'{TOPIC_BASE}/box/{box}/valve/{valve}/set',
             'ON' if on else 'OFF',
         )
 
-    def set_pump(self, on: bool):
-        self.publish(
+    def set_pump(self, on: bool) -> bool:
+        return self.publish(
             f'{TOPIC_BASE}/pump/set',
             'ON' if on else 'OFF',
         )
 
-    def all_off(self):
-        self.publish(f'{TOPIC_BASE}/cmd/stop_all', '')
+    def all_off(self) -> bool:
+        return self.publish(f'{TOPIC_BASE}/cmd/stop_all', '')
 
     def get_state(self):
         with self._state_lock:                       # Fix #11: return snapshot, not live ref

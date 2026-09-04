@@ -45,8 +45,10 @@ def control_valve():
         return jsonify({'error': 'box must be an integer 1-4'}), 400
     if not (isinstance(valve, int) and 1 <= valve <= 3):
         return jsonify({'error': 'valve must be an integer 1-3'}), 400
-    current_app.extensions['mqtt'].set_valve(box, valve, data['state'])
-    return jsonify({'ok': True})
+    # 502 when the command never left the MQTT client — never report a valve
+    # command as accepted when nothing was actually sent.
+    ok = current_app.extensions['mqtt'].set_valve(box, valve, data['state'])
+    return jsonify({'ok': ok}), (200 if ok else 502)
 
 
 @main_bp.route('/api/pump', methods=['POST'])
@@ -56,15 +58,15 @@ def control_pump():
         return jsonify({'error': 'missing field: state'}), 400
     if not isinstance(data['state'], bool):          # Fix #6
         return jsonify({'error': 'state must be a JSON boolean'}), 400
-    current_app.extensions['mqtt'].set_pump(data['state'])
-    return jsonify({'ok': True})
+    ok = current_app.extensions['mqtt'].set_pump(data['state'])
+    return jsonify({'ok': ok}), (200 if ok else 502)
 
 
 @main_bp.route('/api/all_off', methods=['POST'])
 def all_off():
     current_app.extensions['scheduler'].stop_script()
-    current_app.extensions['mqtt'].all_off()
-    return jsonify({'ok': True})
+    ok = current_app.extensions['mqtt'].all_off()
+    return jsonify({'ok': ok}), (200 if ok else 502)
 
 
 @main_bp.route('/api/state')

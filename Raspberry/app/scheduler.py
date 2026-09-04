@@ -8,6 +8,14 @@ from apscheduler.triggers.cron import CronTrigger
 from app.mqtt_client import MQTTClient
 from . import database
 
+# While a script runs, re-assert the state of everything it has opened at this
+# interval. QoS 1 only covers the hop to the broker: this also recovers a valve
+# whose command was lost while the ESP32 was rebooting, and it refreshes the
+# firmware's PUMP_SAFETY_TIMEOUT_MS so steps longer than that are not cut short.
+# It deliberately does not extend the firmware's VALVE_MAX_ON_MS cap, which is
+# stamped on the OFF->ON edge only.
+KEEPALIVE_INTERVAL_S = 300
+
 
 class IrrigationScheduler:
     def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO, max_script_duration: int = 7200):
@@ -19,6 +27,7 @@ class IrrigationScheduler:
         self._running = None
         self._open_valves: set[tuple[int, int]] = set()
         self._pump_open: bool = False
+        self._last_keepalive: float = 0.0
         self._max_duration = max_script_duration
 
     def start(self):
@@ -87,6 +96,28 @@ class IrrigationScheduler:
         except Exception:
             pass
 
+    def _sleep(self, seconds: int):
+        """Sleep in 1 s ticks, returning early once a stop is requested, and
+        re-asserting open valve/pump state every KEEPALIVE_INTERVAL_S."""
+        for _ in range(max(0, seconds)):
+            if self._stop_event.is_set():
+                return
+            time.sleep(1)
+            self._keepalive()
+
+    def _keepalive(self):
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_keepalive < KEEPALIVE_INTERVAL_S:
+                return
+            self._last_keepalive = now
+            open_valves = sorted(self._open_valves)
+            pump_open = self._pump_open
+        for box, valve in open_valves:
+            self.mqtt.set_valve(box, valve, True)
+        if pump_open:
+            self.mqtt.set_pump(True)
+
     def run_script(self, script_id: int):
         script = database.get_script(script_id)
         if not script:
@@ -100,6 +131,7 @@ class IrrigationScheduler:
                 return
             self._stop_event.clear()
             self._running = script['name']
+            self._last_keepalive = time.monotonic()
 
         self.socketio.emit('script_status', {
             'running': script['name'], 'step': 0, 'total': len(steps),
@@ -115,10 +147,7 @@ class IrrigationScheduler:
                     self.mqtt.set_pump(True)
                     with self._lock:
                         self._pump_open = True
-                    for _ in range(pump_delay):
-                        if self._stop_event.is_set():
-                            break
-                        time.sleep(1)
+                    self._sleep(pump_delay)
 
                 for i, step in enumerate(steps):
                     if self._stop_event.is_set():
@@ -177,10 +206,7 @@ class IrrigationScheduler:
                             self._pump_open = False
 
                     if duration > 0:
-                        for _ in range(duration):
-                            if self._stop_event.is_set():
-                                break
-                            time.sleep(1)
+                        self._sleep(duration)
 
                     # Auto-close after duration
                     if action == 'valve_on':
