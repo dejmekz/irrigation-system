@@ -208,26 +208,39 @@ class IrrigationScheduler:
                     if duration > 0:
                         self._sleep(duration)
 
-                    # Auto-close after duration
-                    if action == 'valve_on':
-                        self.mqtt.set_valve(box, valve, False)
-                        with self._lock:
-                            self._open_valves.discard((box, valve))
-                    elif action == 'parallel_group':
-                        for sub in step.get('actions', []):
-                            sub_action = sub.get('action')
-                            if sub_action == 'valve_on':
-                                self.mqtt.set_valve(sub.get('box', 1), sub.get('valve', 1), False)
-                                with self._lock:
-                                    self._open_valves.discard((sub.get('box', 1), sub.get('valve', 1)))
-                            elif sub_action == 'pump_on':   # Fix #1: close pump started in group
-                                self.mqtt.set_pump(False)
-                                with self._lock:
-                                    self._pump_open = False
+                        # Auto-close only for a TIMED step. A valve_on with no
+                        # duration means "open and leave open", which is what
+                        # makes the editor's separate Wait and Valve OFF steps
+                        # usable — previously such a step opened the valve and
+                        # shut it again in the same instant, silently doing
+                        # nothing. Anything still open when the script ends is
+                        # closed by the cleanup in the finally block.
+                        if action == 'valve_on':
+                            self.mqtt.set_valve(box, valve, False)
+                            with self._lock:
+                                self._open_valves.discard((box, valve))
+                        elif action == 'parallel_group':
+                            for sub in step.get('actions', []):
+                                sub_action = sub.get('action')
+                                if sub_action == 'valve_on':
+                                    self.mqtt.set_valve(sub.get('box', 1), sub.get('valve', 1), False)
+                                    with self._lock:
+                                        self._open_valves.discard((sub.get('box', 1), sub.get('valve', 1)))
+                                elif sub_action == 'pump_on':   # Fix #1: close pump started in group
+                                    self.mqtt.set_pump(False)
+                                    with self._lock:
+                                        self._pump_open = False
             finally:
                 watchdog.cancel()
                 if pump_used:                        # Fix #2: stop pump however it was started
                     self.mqtt.set_pump(False)
+                # Close whatever the script left open: an untimed valve_on stays
+                # open by design, and a stop can interrupt anywhere. Pump first,
+                # then valves, so it never runs against closed ones.
+                with self._lock:
+                    leftover = sorted(self._open_valves)
+                for lb, lv in leftover:
+                    self.mqtt.set_valve(lb, lv, False)
                 with self._lock:
                     self._open_valves.clear()
                     self._pump_open = False
