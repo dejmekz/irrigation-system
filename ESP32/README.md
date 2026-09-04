@@ -69,29 +69,44 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`); sets the manifest version from the image |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
-### Image size ceiling — the image must stay under ~1.00 MB
+### OTA size threshold — unexplained, keep images near 1.00 MB
 
-`Update.begin()` on this device rejects an image of **1,016,768 bytes** and
-accepts **1,006,752**, so the usable ceiling sits between the two. That is far
-below the 1,310,720 bytes `default.csv` implies, which means the partition table
-actually burned on this ESP32-C3 is **not** the one this build assumes. Nothing
-in the build warns about it: PlatformIO happily reports "Flash: 74%" against the
-partition table it *thinks* is there, and the image links and validates fine.
+**Measured, reproducible:** an image of **1,016,768 bytes** is refused (twice,
+identically); **1,006,752 / 1,006,800 / 1,007,024** all flash fine. Something
+between those two sizes breaks OTA.
 
-The failure is silent and easy to misread as a network problem. esp32FOTA opens
-the HTTP connection *before* calling `Update.begin()`, so the server logs a
-normal 200 and sends whatever fits in the TCP buffers (~89 kB here) before the
-device hangs up. On the wire it looks exactly like a truncated download.
+**The cause is NOT the partition table.** v14 reports the real layout in its
+heartbeat, and it is exactly what `default.csv` specifies:
 
-**The tell is timing.** A failed flash reboots in about 6 s (`execOTA` returns
-immediately, then `delay(3000)` and restart); a real flash takes ~15 s. If a
-trigger comes back in single-digit seconds, suspect size, not the network.
+```
+"part":{"run":"app1","run_sz":1310720,"next":"app0","next_sz":1310720}
+```
 
-`CORE_DEBUG_LEVEL=1` in `platformio.ini` is what currently buys the headroom —
-it is worth about 10 kB over level 3, and the build does not fit without it.
-Raising it again to debug over serial will silently break OTA. If the image
-grows past the ceiling for real, the fix is to reflash a known partition table
-over USB rather than to keep shaving bytes.
+Both app slots are the full 1.25 MB, leaving ~300 kB of headroom over the image
+that fails. An earlier revision of this file blamed a mismatched partition
+table; that was wrong, and the heartbeat now makes it checkable rather than a
+matter of belief.
+
+**What is still unknown.** The failing build differed from the working ones in
+two ways at once — it was ~10 kB larger *and* built at `CORE_DEBUG_LEVEL=3`
+rather than `1`. Those variables have never been separated, so either could be
+responsible. The reported v11 success at 1,016,752 bytes (debug level 3) argues
+against a clean size threshold, but that flash was not independently verified.
+
+To settle it, build at `CORE_DEBUG_LEVEL=1` with ~12 kB of ballast so the image
+clears 1,016,768 while staying quiet. If it flashes, size is exonerated and
+verbosity is the culprit; if it fails, there is a real size limit to find by
+bisection.
+
+**Until then:** keep images near 1.00 MB and at `CORE_DEBUG_LEVEL=1`, which is
+the only combination actually shown to work.
+
+**The tell for this failure.** esp32FOTA opens the HTTP connection *before*
+calling `Update.begin()`, so a rejected image still produces a normal 200 in the
+server log with ~89 kB sent — whatever fitted in the TCP buffers before the
+device hung up. That is indistinguishable from a truncated download, which is
+what it was previously misdiagnosed as. **Use the clock instead:** a failed
+flash reboots in ~6 s, a real one takes ~15 s.
 
 ### Version rule
 
@@ -193,5 +208,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 13 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 14 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |

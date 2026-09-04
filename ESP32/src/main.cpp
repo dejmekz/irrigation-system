@@ -7,6 +7,7 @@
 #include <esp32fota.h>
 #include "config.h"
 #include <esp_task_wdt.h>
+#include <esp_ota_ops.h>
 
 // Plain-text version marker embedded in the image. FIRMWARE_VERSION is
 // otherwise compiled into instructions and heartbeat arguments, so nothing can
@@ -510,13 +511,30 @@ void publishHeartbeat()
         snprintf(active + pos, (int)sizeof(active) - pos > 0 ? sizeof(active) - pos : 0, "pump");
 
     bool hwOk = pcfOk[0] && pcfOk[1] && rtcOk;
-    char payload[160];
+
+    // Which app partition we booted from and which one an OTA would write to,
+    // with their real sizes. The build only ever knew what the partition CSV
+    // claimed, which turned out not to match the table actually burned on the
+    // chip — a mismatch that shows up as an OTA that looks like a network fault.
+    // Reporting it here means the ceiling is a number you can read, not one you
+    // have to discover by bisecting failed flashes.
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next = esp_ota_get_next_update_partition(NULL);
+    char part[128] = "";
+    snprintf(part, sizeof(part),
+             ",\"part\":{\"run\":\"%s\",\"run_sz\":%u,\"next\":\"%s\",\"next_sz\":%u}",
+             running ? running->label : "?",
+             running ? (unsigned)running->size : 0,
+             next ? next->label : "?",
+             next ? (unsigned)next->size : 0);
+
+    char payload[288];
     if (active[0] == '\0')
-        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s}",
-                 FIRMWARE_VERSION, hwOk ? "true" : "false");
+        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s%s}",
+                 FIRMWARE_VERSION, hwOk ? "true" : "false", part);
     else
-        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d,\"hw_ok\":%s}",
-                 active, FIRMWARE_VERSION, hwOk ? "true" : "false");
+        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d,\"hw_ok\":%s%s}",
+                 active, FIRMWARE_VERSION, hwOk ? "true" : "false", part);
 
     mqtt.publish(MQTT_HEARTBEAT_TOPIC, payload, true);
 }
