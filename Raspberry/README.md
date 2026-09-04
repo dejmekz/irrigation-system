@@ -64,9 +64,23 @@ config.yaml         Broker host/port, system dimensions, firmware dir (no secret
 .env.example        Credential template
 run.py              Entrypoint
 irrigation.service  systemd unit
-setup.sh            One-shot install script for Pi
+setup.sh            One-shot install script for Pi (fresh builds only)
 requirements.txt
+requirements-dev.txt  Test-only dependencies
+tests/              pytest suite — stubbed MQTT, temp DB, no hardware
 ```
+
+## Tests
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python3 -m pytest tests/ -q
+```
+
+Safe to run anywhere: every test uses a stub MQTT client and a throwaway
+database, so nothing reaches a broker or a valve. Takes about 30 s — the
+scheduler tests step through real one-second waits because that is the tick the
+keepalive and the controller sampling run on.
 
 ## Setup
 

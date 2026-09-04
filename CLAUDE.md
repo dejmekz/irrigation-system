@@ -36,7 +36,18 @@ pip install -r requirements.txt
 python run.py                  # starts on port 5000 (or config.yaml web.port)
 ```
 
-No test suite exists.
+### Tests
+
+```bash
+cd Raspberry
+pip install -r requirements-dev.txt
+python3 -m pytest tests/ -q     # ~30 s; the scheduler tests sleep in real time
+```
+
+`tests/` runs against a stub MQTT client and a throwaway SQLite file — no
+broker, no ESP32, no valves — so it is safe to run anywhere. `tests/conftest.py`
+holds the fixtures; `FakeMQTT.offline_from` drops the controller partway through
+a run, which is how the mid-run outage cases are exercised.
 
 ## Raspberry Pi Architecture
 
