@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}History{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-2">
+  <h4 class="mb-0"><i class="bi bi-clock-history me-2"></i>Run History</h4>
+  <button class="btn btn-sm btn-outline-secondary" onclick="location.reload()">
+    <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+  </button>
+</div>
+<p class="text-muted small">
+  Every run, including the ones that did <em>not</em> water — skipped by a gate,
+  missed by the scheduler, or blocked by another script still running.
+</p>
+
+<div class="card shadow-sm">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>Started</th>
+          <th>Script</th>
+          <th>Trigger</th>
+          <th>Outcome</th>
+          <th>Duration</th>
+          <th>Detail</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="text-nowrap small">{{ r.started_at }}</td>
+          <td>
+            <span class="fw-semibold">{{ r.script_name }}</span>
+            {% if r.schedule_name %}
+            <div class="text-muted small"><i class="bi bi-clock me-1"></i>{{ r.schedule_name }}</div>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.trigger == 'schedule' %}
+            <span class="badge bg-secondary">schedule</span>
+            {% else %}
+            <span class="badge bg-light text-dark border">manual</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if r.outcome == 'completed' %}
+            <span class="badge bg-success"><i class="bi bi-check-lg me-1"></i>completed</span>
+            {% elif r.outcome == 'running' %}
+            <span class="badge bg-primary"><i class="bi bi-play-fill me-1"></i>running</span>
+            {% elif r.outcome == 'skipped' %}
+            <span class="badge bg-info text-dark"><i class="bi bi-plug me-1"></i>skipped</span>
+            {% elif r.outcome == 'stopped' %}
+            <span class="badge bg-warning text-dark"><i class="bi bi-stop-fill me-1"></i>stopped</span>
+            {% elif r.outcome == 'missed' %}
+            <span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>missed</span>
+            {% elif r.outcome == 'blocked' %}
+            <span class="badge bg-warning text-dark"><i class="bi bi-sign-stop me-1"></i>blocked</span>
+            {% else %}
+            <span class="badge bg-danger"><i class="bi bi-x-lg me-1"></i>{{ r.outcome }}</span>
+            {% endif %}
+          </td>
+          <td class="text-muted small run-duration"
+              data-start="{{ r.started_at }}" data-end="{{ r.finished_at or '' }}">—</td>
+          <td class="small text-muted">{{ r.detail or '' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">No runs recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Timestamps arrive already converted to local time by the server.
+document.querySelectorAll('.run-duration').forEach(td => {
+  const a = td.dataset.start, b = td.dataset.end;
+  if (!a || !b) return;
+  const secs = Math.round((new Date(b.replace(' ', 'T')) - new Date(a.replace(' ', 'T'))) / 1000);
+  if (isNaN(secs) || secs < 0) return;
+  td.textContent = secs < 60
+    ? `${secs}s`
+    : `${Math.floor(secs / 60)}m ${String(secs % 60).padStart(2, '0')}s`;
+});
+</script>
+{% endblock %}

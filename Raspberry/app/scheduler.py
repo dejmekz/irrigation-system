@@ -4,6 +4,7 @@ import time
 import threading
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.events import EVENT_JOB_MISSED
 
 from app.mqtt_client import MQTTClient
 from . import database
@@ -16,12 +17,21 @@ from . import database
 # stamped on the OFF->ON edge only.
 KEEPALIVE_INTERVAL_S = 300
 
+# APScheduler's default misfire grace is 1 second: a brief stall or a clock nudge
+# at the trigger instant silently drops the run with no trace anywhere. Five
+# minutes survives that, while still being short enough that a run missed by a
+# real outage is reported as missed rather than watering hours late.
+MISFIRE_GRACE_S = 300
+
 
 class IrrigationScheduler:
     def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO, max_script_duration: int = 7200):
         self.mqtt = mqtt_client
         self.socketio = socketio
-        self._scheduler = BackgroundScheduler(daemon=True)
+        self._scheduler = BackgroundScheduler(
+            daemon=True,
+            job_defaults={'misfire_grace_time': MISFIRE_GRACE_S, 'coalesce': True},
+        )
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._running = None
@@ -31,7 +41,38 @@ class IrrigationScheduler:
         self._max_duration = max_script_duration
 
     def start(self):
+        self._scheduler.add_listener(self._on_job_missed, EVENT_JOB_MISSED)
         self._scheduler.start()
+
+    def _on_job_missed(self, event):
+        """A run APScheduler could not start within the grace period. Without
+        this it disappears silently — nothing in the log, nothing in history."""
+        sched_id = None
+        job_id = str(getattr(event, 'job_id', ''))
+        if job_id.startswith('sched_'):
+            try:
+                sched_id = int(job_id.split('_', 1)[1])
+            except ValueError:
+                pass
+
+        name, script_id, script_name = job_id or 'unknown', None, '?'
+        for sched in database.get_schedules():
+            if sched['id'] == sched_id:
+                name = sched['name']
+                script_id = sched['script_id']
+                script_name = sched['script_name']
+                break
+
+        msg = (f'Schedule missed: "{name}" was due at '
+               f'{getattr(event, "scheduled_run_time", "?")} but could not be '
+               f'started within {MISFIRE_GRACE_S}s')
+        print(msg)
+        database.log_message('system/misfire', msg, 'sys')
+        database.record_run(script_id, script_name, 'schedule', 'missed', msg,
+                            schedule_id=sched_id, schedule_name=name)
+        self.socketio.emit('log_entry', {
+            'topic': 'system/misfire', 'payload': msg, 'direction': 'sys',
+        })
 
     def load_schedules(self):
         for sched in database.get_schedules():
@@ -55,27 +96,39 @@ class IrrigationScheduler:
                 self._run_scheduled,
                 CronTrigger(minute=minute, hour=hour, day=day,
                             month=month, day_of_week=dow),
-                args=[sched['script_id'], gate_topic, sched.get('gate_payload') or 'ON'],
+                args=[sched['script_id'], sched['id'], sched['name'],
+                      gate_topic, sched.get('gate_payload') or 'ON'],
                 id=f"sched_{sched['id']}",
                 replace_existing=True,
             )
         except Exception as exc:
             print(f"Invalid cron for schedule {sched['id']} ({sched['cron']}): {exc}")
 
-    def _run_scheduled(self, script_id: int, gate_topic: str | None, gate_payload: str):
+    def _run_scheduled(self, script_id: int, sched_id: int, sched_name: str,
+                       gate_topic: str | None, gate_payload: str):
         """Cron entry point: skip the run if the schedule is gated on an
         external MQTT topic (e.g. a smart plug) that isn't in the expected state."""
         if gate_topic:
             current = self.mqtt.get_gate_state(gate_topic)
             if current != gate_payload:
-                msg = (f'Schedule skipped: {gate_topic} = {current!r} '
+                # Distinguish "no value ever seen on this topic" from a real
+                # mismatch — the first usually means a missing retain flag
+                # upstream, and looks identical in the log otherwise.
+                seen = 'never received' if current is None else f'{current!r}'
+                msg = (f'Schedule skipped: {gate_topic} = {seen} '
                        f'(expected {gate_payload!r})')
                 database.log_message('system/gate', msg, 'sys')
+                script = database.get_script(script_id)
+                database.record_run(
+                    script_id, script['name'] if script else f'script {script_id}',
+                    'schedule', 'skipped', msg,
+                    schedule_id=sched_id, schedule_name=sched_name)
                 self.socketio.emit('log_entry', {
                     'topic': 'system/gate', 'payload': msg, 'direction': 'sys',
                 })
                 return
-        self.run_script(script_id)
+        self.run_script(script_id, trigger='schedule',
+                        schedule_id=sched_id, schedule_name=sched_name)
 
     def reload_schedule(self, sched_id):
         try:
@@ -118,20 +171,35 @@ class IrrigationScheduler:
         if pump_open:
             self.mqtt.set_pump(True)
 
-    def run_script(self, script_id: int):
+    def run_script(self, script_id: int, trigger: str = 'manual',
+                   schedule_id: int | None = None, schedule_name: str | None = None):
         script = database.get_script(script_id)
         if not script:
+            database.record_run(script_id, f'script {script_id}', trigger, 'error',
+                                'script not found', schedule_id, schedule_name)
             return
         steps = json.loads(script['steps'])
         pump_box = script.get('pump_box')
         pump_delay = int(script.get('pump_delay') or 0)
 
         with self._lock:
-            if self._running is not None:            # Fix #8: falsy "" would bypass old guard
-                return
-            self._stop_event.clear()
-            self._running = script['name']
-            self._last_keepalive = time.monotonic()
+            blocked_by = self._running                # Fix #8: falsy "" would bypass old guard
+            if blocked_by is None:
+                self._stop_event.clear()
+                self._running = script['name']
+                self._last_keepalive = time.monotonic()
+        if blocked_by is not None:
+            # Recorded rather than silently dropped: "the 20:00 run never
+            # happened because the 19:40 one was still going" is exactly the
+            # question this history exists to answer. (DB write is outside the
+            # lock deliberately.)
+            database.record_run(script_id, script['name'], trigger, 'blocked',
+                                f'another script was already running: {blocked_by!r}',
+                                schedule_id, schedule_name)
+            return
+
+        run_id = database.start_run(script_id, script['name'], trigger,
+                                    schedule_id, schedule_name)
 
         self.socketio.emit('script_status', {
             'running': script['name'], 'step': 0, 'total': len(steps),
@@ -139,7 +207,14 @@ class IrrigationScheduler:
 
         def execute():
             pump_used = bool(pump_box)               # Fix #2: track all pump start paths
-            watchdog = threading.Timer(self._max_duration, self._stop_event.set)
+            outcome, detail = 'completed', None
+            watchdog_fired = threading.Event()
+
+            def _watchdog():
+                watchdog_fired.set()
+                self._stop_event.set()
+
+            watchdog = threading.Timer(self._max_duration, _watchdog)
             watchdog.daemon = True
             watchdog.start()
             try:
@@ -230,6 +305,10 @@ class IrrigationScheduler:
                                     self.mqtt.set_pump(False)
                                     with self._lock:
                                         self._pump_open = False
+            except Exception as exc:
+                outcome = 'error'
+                detail = f'{type(exc).__name__}: {exc}'
+                print(f'Script {script["name"]!r} failed: {exc}')
             finally:
                 watchdog.cancel()
                 if pump_used:                        # Fix #2: stop pump however it was started
@@ -245,6 +324,13 @@ class IrrigationScheduler:
                     self._open_valves.clear()
                     self._pump_open = False
                     self._running = None
+
+                if outcome == 'completed' and self._stop_event.is_set():
+                    outcome = 'stopped'
+                    detail = (f'exceeded max_script_duration ({self._max_duration}s)'
+                              if watchdog_fired.is_set() else 'stopped manually')
+                database.finish_run(run_id, outcome, detail)
+
                 self.socketio.emit('script_status', {
                     'running': None, 'step': 0, 'total': 0,
                 })

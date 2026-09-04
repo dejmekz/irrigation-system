@@ -202,6 +202,18 @@ def api_gates():
     return jsonify(current_app.extensions['mqtt'].get_gate_states())
 
 
+# ---------- Run history ----------
+
+@main_bp.route('/runs')
+def runs():
+    return render_template('runs.html', runs=database.get_runs(100))
+
+
+@main_bp.route('/api/runs')
+def api_runs():
+    return jsonify(database.get_runs(100))
+
+
 # ---------- Log ----------
 
 @main_bp.route('/log')

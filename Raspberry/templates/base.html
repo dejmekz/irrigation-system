@@ -24,6 +24,7 @@
         <li class="nav-item"><a class="nav-link {% if request.path == '/' %}active{% endif %}" href="/"><i class="bi bi-grid-3x3-gap me-1"></i>Dashboard</a></li>
         <li class="nav-item"><a class="nav-link {% if '/scripts' in request.path %}active{% endif %}" href="/scripts"><i class="bi bi-list-ol me-1"></i>Scripts</a></li>
         <li class="nav-item"><a class="nav-link {% if '/schedules' in request.path %}active{% endif %}" href="/schedules"><i class="bi bi-clock me-1"></i>Schedules</a></li>
+        <li class="nav-item"><a class="nav-link {% if '/runs' in request.path %}active{% endif %}" href="/runs"><i class="bi bi-clock-history me-1"></i>History</a></li>
         <li class="nav-item"><a class="nav-link {% if '/log' in request.path %}active{% endif %}" href="/log"><i class="bi bi-journal-text me-1"></i>MQTT Log</a></li>
       </ul>
       <span class="navbar-text me-3">

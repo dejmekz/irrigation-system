@@ -63,6 +63,18 @@ def init_db():
                 gate_payload TEXT    DEFAULT 'ON',
                 FOREIGN KEY (script_id) REFERENCES scripts(id)
             );
+            CREATE TABLE IF NOT EXISTS run_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                script_id     INTEGER,
+                script_name   TEXT    NOT NULL,
+                schedule_id   INTEGER,
+                schedule_name TEXT,
+                trigger       TEXT    NOT NULL,  -- manual | schedule
+                outcome       TEXT    NOT NULL,  -- running|completed|stopped|error|skipped|missed|blocked
+                detail        TEXT,
+                started_at    TEXT    DEFAULT (datetime('now')),
+                finished_at   TEXT
+            );
             CREATE TABLE IF NOT EXISTS message_log (
                 id        INTEGER PRIMARY KEY AUTOINCREMENT,
                 topic     TEXT NOT NULL,
@@ -98,6 +110,61 @@ def log_message(topic: str, payload: str, direction: str):
             )
     except Exception:
         pass
+
+
+# Runs are infrequent (a few a day), so 500 rows is well over a year of history
+# — unlike message_log, which a single watering can fill a tenth of.
+_RUN_HISTORY_LIMIT = 500
+
+
+def start_run(script_id: int | None, script_name: str, trigger: str,
+              schedule_id: int | None = None, schedule_name: str | None = None) -> int | None:
+    """Record a run that is starting. Returns the row id to pass to finish_run."""
+    try:
+        with get_db() as conn:
+            cur = conn.execute(
+                'INSERT INTO run_history (script_id, script_name, schedule_id, '
+                'schedule_name, trigger, outcome) VALUES (?, ?, ?, ?, ?, ?)',
+                (script_id, script_name, schedule_id, schedule_name, trigger, 'running'),
+            )
+            conn.execute(
+                'DELETE FROM run_history WHERE id NOT IN '
+                '(SELECT id FROM run_history ORDER BY id DESC LIMIT ?)',
+                (_RUN_HISTORY_LIMIT,),
+            )
+            return cur.lastrowid
+    except Exception:      # history must never take the irrigation thread down
+        return None
+
+
+def finish_run(run_id: int | None, outcome: str, detail: str | None = None):
+    if run_id is None:
+        return
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "UPDATE run_history SET outcome=?, detail=?, "
+                "finished_at=datetime('now') WHERE id=?",
+                (outcome, detail, run_id),
+            )
+    except Exception:
+        pass
+
+
+def record_run(script_id: int | None, script_name: str, trigger: str, outcome: str,
+               detail: str | None = None, schedule_id: int | None = None,
+               schedule_name: str | None = None):
+    """Record a run that never started — skipped by a gate, missed, or blocked."""
+    run_id = start_run(script_id, script_name, trigger, schedule_id, schedule_name)
+    finish_run(run_id, outcome, detail)
+
+
+def get_runs(limit: int = 100):
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT * FROM run_history ORDER BY id DESC LIMIT ?', (limit,)
+        ).fetchall()
+    return [_localise(dict(r), 'started_at', 'finished_at') for r in rows]
 
 
 def get_logs(limit: int = 200):
