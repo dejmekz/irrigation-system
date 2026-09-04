@@ -44,8 +44,24 @@ static bool lcdOk = false;
 static bool hwStatusDirty = false;
 
 // ---- PCF fault overlay ----
+// Held as start + duration rather than an absolute deadline: comparing
+// millis() against a stored deadline breaks across the ~49 day rollover, so on
+// a controller that runs for months the fault line would either stick on
+// screen or stop appearing. Unsigned (now - start) stays correct through it.
 static char pcfErrMsg[LCD_COLS + 1] = "";
-static unsigned long pcfErrUntil = 0;
+static unsigned long pcfErrAt = 0;
+static unsigned long pcfErrMs = 0;
+
+static inline void pcfErrFor(unsigned long ms)
+{
+    pcfErrAt = millis();
+    pcfErrMs = ms;
+}
+
+static inline bool pcfErrActive()
+{
+    return pcfErrMs && (millis() - pcfErrAt) < pcfErrMs;
+}
 
 // ---- LCD dirty flag ----
 static bool lcdDirty = true;
@@ -125,7 +141,7 @@ bool setRelay(int box, int valve, bool on)
     if (!pcfWrite(idx))
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "PCF[%d] relay error!", idx);
-        pcfErrUntil = millis() + 3000;
+        pcfErrFor(3000);
         return false;
     }
     return true;
@@ -146,7 +162,7 @@ void allOff()
     if (!ok0 || !ok1)
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), " allOff I2C error!  ");
-        pcfErrUntil = millis() + 5000;
+        pcfErrFor(5000);
         log_e("allOff: PCF I2C write failed — relays may still be active!");
     }
     // Only mark closed what the bus actually accepted. An expander that refused
@@ -288,7 +304,7 @@ void updateLCD()
     }
     lcdDirty = false;
 
-    if (millis() < pcfErrUntil)
+    if (pcfErrActive())
         lcdLine(3, pcfErrMsg);
 }
 
@@ -306,7 +322,7 @@ void publishState(int box, int valve, bool on)
     if (!mqtt.publish(topic, on ? "ON" : "OFF", true))
     { // retained
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "MQTT publish failed!");
-        pcfErrUntil = millis() + 5000;
+        pcfErrFor(5000);
     }
 }
 
@@ -353,7 +369,7 @@ void setValve(int box, int valve, bool on)
         // Re-publish OFF so the Pi's view stays truthful about the refusal.
         publishState(box, valve, false);
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "B%d V%d latched off", box, valve);
-        pcfErrUntil = millis() + 5000;
+        pcfErrFor(5000);
         log_w("Valve B%d:V%d ON ignored - latched by safety timer until OFF", box, valve);
         return;
     }
@@ -662,7 +678,7 @@ void loop()
         {
             allOff(); // Emergency stop
             snprintf(pcfErrMsg, sizeof(pcfErrMsg), " WiFi lost! Stopped ");
-            pcfErrUntil = millis() + 5000;
+            pcfErrFor(5000);
             wifiLostAt = millis(); // restart timer so repeated checks don't re-trigger
             log_e("WiFi lost while watering — all outputs stopped");
         }
@@ -725,7 +741,7 @@ void loop()
     if (safetyClosedValve)
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "Valve max time stop!");
-        pcfErrUntil = millis() + 5000;
+        pcfErrFor(5000);
         // Don't leave the pump running dry once the safety timer took the last
         // valve away. Only on this path — a pump legitimately runs with no valve
         // open during a script's configured pump start delay.
@@ -743,7 +759,7 @@ void loop()
         if (mqtt.connected())
             publishAllState();
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "Pump safety stop!");
-        pcfErrUntil = millis() + 5000;
+        pcfErrFor(5000);
         log_e("Pump safety stop: no valve ON for %lu min — all outputs off",
               PUMP_SAFETY_TIMEOUT_MS / 60000UL);
     }
