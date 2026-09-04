@@ -69,44 +69,50 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`); sets the manifest version from the image |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
-### OTA size threshold — unexplained, keep images near 1.00 MB
+### OTA downloads truncate intermittently — retry until one completes
 
-**Measured, reproducible:** an image of **1,016,768 bytes** is refused (twice,
-identically); **1,006,752 / 1,006,800 / 1,007,024** all flash fine. Something
-between those two sizes breaks OTA.
+**The failure is intermittent, and neither image size nor build verbosity
+explains it.** Two earlier revisions of this file claimed otherwise; both were
+wrong, and both were wrong because they generalised from a handful of runs of a
+process that fails at random. The full record, so nobody has to repeat it:
 
-**The cause is NOT the partition table.** v14 reports the real layout in its
-heartbeat, and it is exactly what `default.csv` specifies:
+| Version | Size | `CORE_DEBUG_LEVEL` | Result |
+|---|---|---|---|
+| v12 | 1,016,768 | 3 | failed twice — ~6 s, ~89 kB transferred |
+| v12 | 1,006,752 | 1 | flashed |
+| v13 | 1,006,800 | 1 | flashed |
+| v14 | 1,007,024 | 1 | flashed |
+| v15 (+16 kB ballast) | **1,023,520** | 1 | **flashed** |
+| v16 | 1,007,024 | 1 | failed 4× (237 / 745 / 547 kB), then flashed (987 kB) |
 
-```
-"part":{"run":"app1","run_sz":1310720,"next":"app0","next_sz":1310720}
-```
+- **Size is ruled out.** v15 was deliberately padded to 1,023,520 bytes — larger
+  than the v12 image that failed twice — and flashed without trouble.
+- **Verbosity is not established.** v16 is byte-identical code to v14 at the
+  same size and debug level, and failed four times in a row before succeeding.
+  The v12 failures at level 3 were most likely the same intermittent fault.
+- **What actually happens:** the download breaks at a different point every
+  time — 89, 237, 547, 745 kB — and sometimes runs to completion. The partition
+  table is not involved (v14+ report it in the heartbeat; both slots are the
+  full 1.25 MB, ~300 kB more than any image here).
 
-Both app slots are the full 1.25 MB, leaving ~300 kB of headroom over the image
-that fails. An earlier revision of this file blamed a mismatched partition
-table; that was wrong, and the heartbeat now makes it checkable rather than a
-matter of belief.
+**The root cause is unknown.** Candidates not yet separated: WiFi link quality,
+something in Apache or the TCP path, and the ESP32's own buffering. It is worth
+noting the original diagnosis in this project — a truncated download — matches
+the evidence better than either theory that replaced it.
 
-**What is still unknown.** The failing build differed from the working ones in
-two ways at once — it was ~10 kB larger *and* built at `CORE_DEBUG_LEVEL=3`
-rather than `1`. Those variables have never been separated, so either could be
-responsible. The reported v11 success at 1,016,752 bytes (debug level 3) argues
-against a clean size threshold, but that flash was not independently verified.
+**Mitigation: just retry.** A failed OTA is harmless; esp32FOTA leaves the
+running partition alone and reboots into the existing firmware. Space attempts
+by ~30 s and avoid polling the Pi during the transfer — the successful runs
+correlate with a quiet server, though the sample is far too small to call that
+a cause.
 
-To settle it, build at `CORE_DEBUG_LEVEL=1` with ~12 kB of ballast so the image
-clears 1,016,768 while staying quiet. If it flashes, size is exonerated and
-verbosity is the culprit; if it fails, there is a real size limit to find by
-bisection.
-
-**Until then:** keep images near 1.00 MB and at `CORE_DEBUG_LEVEL=1`, which is
-the only combination actually shown to work.
-
-**The tell for this failure.** esp32FOTA opens the HTTP connection *before*
-calling `Update.begin()`, so a rejected image still produces a normal 200 in the
-server log with ~89 kB sent — whatever fitted in the TCP buffers before the
-device hung up. That is indistinguishable from a truncated download, which is
-what it was previously misdiagnosed as. **Use the clock instead:** a failed
-flash reboots in ~6 s, a real one takes ~15 s.
+**Reading the outcome.** Compare `Total kBytes` from
+`curl -s 'http://localhost/server-status?auto'` on the Pi before and after: a
+completed flash moves ~985 kB, and anything less is a truncated attempt. The
+device version in `/api/state` is the definitive check. Note that a rejected or
+broken transfer still logs a normal 200 server-side, because esp32FOTA opens
+the connection before it decides anything — so the server log alone cannot tell
+you what happened.
 
 ### Version rule
 
@@ -208,5 +214,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 14 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 16 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |

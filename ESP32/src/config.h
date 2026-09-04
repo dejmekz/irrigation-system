@@ -41,7 +41,7 @@
 // ---- OTA ----
 // Bump FIRMWARE_VERSION before every release build, then upload the new .bin to the Pi.
 // The Pi manifest version must match for the ESP32 to recognise it as an update.
-#define FIRMWARE_VERSION  14
+#define FIRMWARE_VERSION  16
 #define FIRMWARE_TYPE     "irrigation-esp32c3"
 // Served by Apache (port 80), not the Flask dev server on :5000 — Werkzeug
 // truncates the 1 MB image to a slow client, which fails the OTA image check.
