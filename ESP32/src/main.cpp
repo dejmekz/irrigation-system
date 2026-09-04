@@ -8,6 +8,20 @@
 #include "config.h"
 #include <esp_task_wdt.h>
 
+// Plain-text version marker embedded in the image. FIRMWARE_VERSION is
+// otherwise compiled into instructions and heartbeat arguments, so nothing can
+// read it back out of a built binary — which is why the Pi's upload endpoint
+// had to keep a counter of its own, and why that counter drifted from the
+// version actually flashed. The Pi now scans the uploaded image for this.
+#define _FW_STR(x) #x
+#define FW_STR(x) _FW_STR(x)
+// __attribute__((used)) alone is not enough — this toolchain's GCC predates the
+// `retain` attribute, so --gc-sections still drops the string. setup() prints
+// it, which both keeps it in the image and puts the running version on the
+// serial console for anyone who does connect a cable.
+extern "C" const char FW_VERSION_TAG[] =
+    "IRRIGATION_FW_VERSION=" FW_STR(FIRMWARE_VERSION) ":END";
+
 // ---- PCF8574A state ----
 // Each bit = one relay output. Active-LOW: 0 = relay ON, 1 = relay OFF.
 static uint8_t pcfState[2] = {0xFF, 0xFF};
@@ -552,6 +566,7 @@ void wifiConnect()
 void setup()
 {
     Serial.begin(115200);
+    Serial.println(FW_VERSION_TAG);   // also keeps the marker in the image
 
     Wire.begin(I2C_SDA, I2C_SCL);
     Wire.setClock(I2C_CLOCK_HZ);

@@ -66,7 +66,7 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 |---|---|---|
 | `GET` | `/firmware/manifest.json` | Manifest (fallback; the ESP32 reads Apache's copy) |
 | `GET` | `/firmware/irrigation.bin` | Binary (fallback only — **not** the OTA path) |
-| `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`), increments manifest version |
+| `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`); sets the manifest version from the image |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
 ### Image size ceiling — the image must stay under ~1.00 MB
@@ -95,9 +95,30 @@ over USB rather than to keep shaving bytes.
 
 ### Version rule
 
-`FIRMWARE_VERSION` in `config.h` **must be bumped** before each build. The upload endpoint increments the manifest version to match. If both numbers are equal, no update is triggered.
+`FIRMWARE_VERSION` in `config.h` **must be bumped** before each build. esp32FOTA flashes only when the manifest version is strictly greater than the version the device is running, so an unbumped build is a no-op.
 
-`manifest.json` is **not** in git — it is server-side state that the upload endpoint rewrites, so a tracked copy only ever drifts. The upload endpoint floors the new version at whatever the ESP32 last reported over MQTT, so a missing or stale manifest cannot leave you uploading images that never flash.
+The manifest takes its version **from the image itself**. The firmware embeds
+`IRRIGATION_FW_VERSION=<n>:END` as plain text (`FW_VERSION_TAG` in `main.cpp`)
+and `/firmware/upload` reads it back out, so the manifest always states what is
+actually in the file.
+
+It did not always work that way, and the old behaviour is worth knowing if you
+meet a stale manifest: upload used to increment a counter of its own, floored at
+the version the ESP32 last reported. That counter tracked uploads rather than
+firmware, so after a successful flash the manifest sat permanently one ahead of
+the device and every subsequent trigger re-flashed an image it already had.
+Images built before the marker still take that path — the response says
+`"version_source": "counter"` rather than `"image"` when it does.
+
+Note the marker needs a real runtime reference to survive `--gc-sections`;
+`__attribute__((used))` alone is not enough on this toolchain, which is why
+`setup()` prints it. If you ever stop printing it, check with
+`strings firmware.bin | grep IRRIGATION_FW_VERSION` before uploading.
+
+The upload response also reports `will_update`, which is false when the manifest
+version is not greater than the running one — i.e. triggering would do nothing.
+
+`manifest.json` is **not** in git — it is server-side state that the upload endpoint rewrites, so a tracked copy only ever drifts.
 
 ## Safety Features
 
@@ -172,5 +193,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 12 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 13 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |
