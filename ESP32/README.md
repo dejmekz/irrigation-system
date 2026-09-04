@@ -69,6 +69,30 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`), increments manifest version |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
+### Image size ceiling — the image must stay under ~1.00 MB
+
+`Update.begin()` on this device rejects an image of **1,016,768 bytes** and
+accepts **1,006,752**, so the usable ceiling sits between the two. That is far
+below the 1,310,720 bytes `default.csv` implies, which means the partition table
+actually burned on this ESP32-C3 is **not** the one this build assumes. Nothing
+in the build warns about it: PlatformIO happily reports "Flash: 74%" against the
+partition table it *thinks* is there, and the image links and validates fine.
+
+The failure is silent and easy to misread as a network problem. esp32FOTA opens
+the HTTP connection *before* calling `Update.begin()`, so the server logs a
+normal 200 and sends whatever fits in the TCP buffers (~89 kB here) before the
+device hangs up. On the wire it looks exactly like a truncated download.
+
+**The tell is timing.** A failed flash reboots in about 6 s (`execOTA` returns
+immediately, then `delay(3000)` and restart); a real flash takes ~15 s. If a
+trigger comes back in single-digit seconds, suspect size, not the network.
+
+`CORE_DEBUG_LEVEL=1` in `platformio.ini` is what currently buys the headroom —
+it is worth about 10 kB over level 3, and the build does not fit without it.
+Raising it again to debug over serial will silently break OTA. If the image
+grows past the ceiling for real, the fix is to reflash a known partition table
+over USB rather than to keep shaving bytes.
+
 ### Version rule
 
 `FIRMWARE_VERSION` in `config.h` **must be bumped** before each build. The upload endpoint increments the manifest version to match. If both numbers are equal, no update is triggered.
@@ -148,5 +172,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 11 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 12 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |
