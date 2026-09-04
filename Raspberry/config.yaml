@@ -11,6 +11,10 @@ system:
   boxes: 4
   valves_per_box: 3
   max_script_duration: 7200  # seconds; script is force-stopped if it exceeds this
+  # Must match VALVE_MAX_ON_MS in ESP32/src/config.h. The firmware closes and
+  # latches any valve held open this long, so a script that would exceed it is
+  # rejected at save time rather than silently running dry for the remainder.
+  valve_max_on: 3600         # seconds
 
 web:
   host: "0.0.0.0"

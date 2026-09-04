@@ -70,7 +70,7 @@ def init_db():
                 schedule_id   INTEGER,
                 schedule_name TEXT,
                 trigger       TEXT    NOT NULL,  -- manual | schedule
-                outcome       TEXT    NOT NULL,  -- running|completed|stopped|error|skipped|missed|blocked
+                outcome       TEXT    NOT NULL,  -- running|completed|stopped|error|skipped|missed|blocked|offline
                 detail        TEXT,
                 started_at    TEXT    DEFAULT (datetime('now')),
                 finished_at   TEXT

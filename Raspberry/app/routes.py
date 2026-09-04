@@ -19,6 +19,77 @@ def _validate_cron(cron: str) -> str | None:
     return None
 
 
+def _controller_offline() -> str | None:
+    """Return an error string unless the ESP32 is known to be online. Commands
+    published while it is offline are silently dropped by the broker, so the UI
+    must not report them as accepted."""
+    status = current_app.extensions['mqtt'].esp32_status()
+    if status is True:
+        return None
+    if status is None:
+        return ('controller status unknown — no irrigation/status message '
+                'received yet')
+    return 'controller is offline — the command would not reach the valves'
+
+
+def _validate_steps(steps: list, max_on: int) -> str | None:
+    """Reject a script that would hold a valve open past the firmware's
+    per-valve cap (VALVE_MAX_ON_MS). The firmware closes and latches such a
+    valve and refuses to reopen it until an explicit OFF, while the Pi carries
+    on and records the run as completed — so the tail of the script silently
+    waters nothing. Walks the step list the same way the scheduler executes it,
+    tracking how long each valve stays open across steps, because an untimed
+    valve_on followed by a long wait hits the cap just as a long timed step does.
+
+    A script's pump start delay is deliberately not modelled: it elapses before
+    any valve opens, so it shifts both clocks equally and cannot change how long
+    a valve is held.
+    """
+    if max_on <= 0:
+        return None
+
+    elapsed = 0
+    open_at: dict[tuple[int, int], int] = {}
+
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            return f'step {i + 1} is not an object'
+        action = step.get('action')
+        try:
+            duration = int(step.get('duration') or 0)
+        except (TypeError, ValueError):
+            return f'step {i + 1}: duration must be a number'
+        if duration < 0:
+            return f'step {i + 1}: duration must not be negative'
+
+        subs = (step.get('actions') or []) if action == 'parallel_group' else [step]
+        for sub in subs:
+            if not isinstance(sub, dict):
+                return f'step {i + 1}: parallel action is not an object'
+            key = (sub.get('box', 1), sub.get('valve', 1))
+            if sub.get('action') == 'valve_on':
+                open_at.setdefault(key, elapsed)
+            elif sub.get('action') == 'valve_off':
+                open_at.pop(key, None)
+
+        elapsed += duration
+
+        for (box, valve), opened in sorted(open_at.items()):
+            held = elapsed - opened
+            if held >= max_on:
+                return (f'step {i + 1}: valve {box}/{valve} would be held open for '
+                        f'{held}s, at or over the {max_on}s limit the controller '
+                        f'enforces — it would be closed and latched mid-script')
+
+        # A timed valve_on (or timed parallel group) closes what it opened.
+        if duration > 0:
+            for sub in subs:
+                if isinstance(sub, dict) and sub.get('action') == 'valve_on':
+                    open_at.pop((sub.get('box', 1), sub.get('valve', 1)), None)
+
+    return None
+
+
 @main_bp.route('/')
 def dashboard():
     cfg = current_app.config['SYS_CFG']
@@ -45,6 +116,9 @@ def control_valve():
         return jsonify({'error': 'box must be an integer 1-4'}), 400
     if not (isinstance(valve, int) and 1 <= valve <= 3):
         return jsonify({'error': 'valve must be an integer 1-3'}), 400
+    offline = _controller_offline()
+    if offline:
+        return jsonify({'error': offline}), 503
     # 502 when the command never left the MQTT client — never report a valve
     # command as accepted when nothing was actually sent.
     ok = current_app.extensions['mqtt'].set_valve(box, valve, data['state'])
@@ -58,6 +132,9 @@ def control_pump():
         return jsonify({'error': 'missing field: state'}), 400
     if not isinstance(data['state'], bool):          # Fix #6
         return jsonify({'error': 'state must be a JSON boolean'}), 400
+    offline = _controller_offline()
+    if offline:
+        return jsonify({'error': offline}), 503
     ok = current_app.extensions['mqtt'].set_pump(data['state'])
     return jsonify({'ok': ok}), (200 if ok else 502)
 
@@ -78,7 +155,11 @@ def get_state():
 
 @main_bp.route('/scripts')
 def scripts():
-    return render_template('scripts.html', scripts=database.get_scripts())
+    return render_template(
+        'scripts.html',
+        scripts=database.get_scripts(),
+        valve_max_on=int(current_app.config['SYS_CFG'].get('valve_max_on', 3600)),
+    )
 
 
 @main_bp.route('/api/scripts', methods=['GET'])
@@ -95,6 +176,12 @@ def api_save_script():
         return jsonify({'error': 'name must be a non-empty string'}), 400  # Fix #8
     if not isinstance(data['steps'], list):          # Fix #9: prevent double-encoded steps
         return jsonify({'error': 'steps must be a JSON array'}), 400
+    err = _validate_steps(
+        data['steps'],
+        int(current_app.config['SYS_CFG'].get('valve_max_on', 3600)),
+    )
+    if err:
+        return jsonify({'error': err}), 400
     script_id = database.save_script(
         data['name'], data['steps'],
         pump_box=data.get('pump_box'),
@@ -112,6 +199,12 @@ def api_update_script(script_id):
         return jsonify({'error': 'name must be a non-empty string'}), 400  # Fix #8
     if not isinstance(data['steps'], list):          # Fix #9
         return jsonify({'error': 'steps must be a JSON array'}), 400
+    err = _validate_steps(
+        data['steps'],
+        int(current_app.config['SYS_CFG'].get('valve_max_on', 3600)),
+    )
+    if err:
+        return jsonify({'error': err}), 400
     database.update_script(
         script_id, data['name'], data['steps'],
         pump_box=data.get('pump_box'),
@@ -225,6 +318,13 @@ def log():
 @main_bp.route('/api/log')
 def api_log():
     return jsonify(database.get_logs(200))
+
+
+@main_bp.route('/api/esp32')
+def api_esp32():
+    """Controller reachability. true/false once irrigation/status has been seen,
+    null if it never has — the navbar badge distinguishes all three."""
+    return jsonify({'online': current_app.extensions['mqtt'].esp32_status()})
 
 
 @main_bp.route('/api/scheduler/status')

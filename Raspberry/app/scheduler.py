@@ -39,6 +39,10 @@ class IrrigationScheduler:
         self._pump_open: bool = False
         self._last_keepalive: float = 0.0
         self._max_duration = max_script_duration
+        # Publishes that never left the MQTT client during the current run.
+        # A run that watered nothing because the broker was down must not be
+        # recorded as 'completed'.
+        self._publish_failures = 0
 
     def start(self):
         self._scheduler.add_listener(self._on_job_missed, EVENT_JOB_MISSED)
@@ -149,6 +153,16 @@ class IrrigationScheduler:
         except Exception:
             pass
 
+    def _pub_valve(self, box: int, valve: int, on: bool):
+        if not self.mqtt.set_valve(box, valve, on):
+            with self._lock:
+                self._publish_failures += 1
+
+    def _pub_pump(self, on: bool):
+        if not self.mqtt.set_pump(on):
+            with self._lock:
+                self._publish_failures += 1
+
     def _sleep(self, seconds: int):
         """Sleep in 1 s ticks, returning early once a stop is requested, and
         re-asserting open valve/pump state every KEEPALIVE_INTERVAL_S."""
@@ -167,9 +181,9 @@ class IrrigationScheduler:
             open_valves = sorted(self._open_valves)
             pump_open = self._pump_open
         for box, valve in open_valves:
-            self.mqtt.set_valve(box, valve, True)
+            self._pub_valve(box, valve, True)
         if pump_open:
-            self.mqtt.set_pump(True)
+            self._pub_pump(True)
 
     def run_script(self, script_id: int, trigger: str = 'manual',
                    schedule_id: int | None = None, schedule_name: str | None = None):
@@ -178,6 +192,23 @@ class IrrigationScheduler:
             database.record_run(script_id, f'script {script_id}', trigger, 'error',
                                 'script not found', schedule_id, schedule_name)
             return
+        # Nothing downstream ever checks whether the controller is reachable, so
+        # without this a run against an offline ESP32 publishes into the void,
+        # waters nothing, and is recorded as a clean 'completed'.
+        online = self.mqtt.esp32_status()
+        if online is not True:
+            msg = ('Run aborted: controller is offline' if online is False else
+                   'Run aborted: controller status unknown — no irrigation/status '
+                   'message received yet')
+            database.log_message('system/offline', msg, 'sys')
+            database.record_run(script_id, script['name'], trigger, 'offline', msg,
+                                schedule_id, schedule_name)
+            self.socketio.emit('log_entry', {
+                'topic': 'system/offline', 'payload': msg, 'direction': 'sys',
+            })
+            print(msg)
+            return
+
         steps = json.loads(script['steps'])
         pump_box = script.get('pump_box')
         pump_delay = int(script.get('pump_delay') or 0)
@@ -188,6 +219,7 @@ class IrrigationScheduler:
                 self._stop_event.clear()
                 self._running = script['name']
                 self._last_keepalive = time.monotonic()
+                self._publish_failures = 0
         if blocked_by is not None:
             # Recorded rather than silently dropped: "the 20:00 run never
             # happened because the 19:40 one was still going" is exactly the
@@ -219,7 +251,7 @@ class IrrigationScheduler:
             watchdog.start()
             try:
                 if pump_box and not self._stop_event.is_set():
-                    self.mqtt.set_pump(True)
+                    self._pub_pump(True)
                     with self._lock:
                         self._pump_open = True
                     self._sleep(pump_delay)
@@ -246,37 +278,37 @@ class IrrigationScheduler:
                             sub_box = sub.get('box', 1)
                             sub_valve = sub.get('valve', 1)
                             if sub_action == 'valve_on':
-                                self.mqtt.set_valve(sub_box, sub_valve, True)
+                                self._pub_valve(sub_box, sub_valve, True)
                                 with self._lock:
                                     self._open_valves.add((sub_box, sub_valve))
                             elif sub_action == 'valve_off':
-                                self.mqtt.set_valve(sub_box, sub_valve, False)
+                                self._pub_valve(sub_box, sub_valve, False)
                                 with self._lock:
                                     self._open_valves.discard((sub_box, sub_valve))
                             elif sub_action == 'pump_on':
-                                self.mqtt.set_pump(True)
+                                self._pub_pump(True)
                                 pump_used = True
                                 with self._lock:
                                     self._pump_open = True
                             elif sub_action == 'pump_off':
-                                self.mqtt.set_pump(False)
+                                self._pub_pump(False)
                                 with self._lock:
                                     self._pump_open = False
                     elif action == 'valve_on':
-                        self.mqtt.set_valve(box, valve, True)
+                        self._pub_valve(box, valve, True)
                         with self._lock:
                             self._open_valves.add((box, valve))
                     elif action == 'valve_off':
-                        self.mqtt.set_valve(box, valve, False)
+                        self._pub_valve(box, valve, False)
                         with self._lock:
                             self._open_valves.discard((box, valve))
                     elif action == 'pump_on':
-                        self.mqtt.set_pump(True)
+                        self._pub_pump(True)
                         pump_used = True
                         with self._lock:
                             self._pump_open = True
                     elif action == 'pump_off':
-                        self.mqtt.set_pump(False)
+                        self._pub_pump(False)
                         with self._lock:
                             self._pump_open = False
 
@@ -291,18 +323,18 @@ class IrrigationScheduler:
                         # nothing. Anything still open when the script ends is
                         # closed by the cleanup in the finally block.
                         if action == 'valve_on':
-                            self.mqtt.set_valve(box, valve, False)
+                            self._pub_valve(box, valve, False)
                             with self._lock:
                                 self._open_valves.discard((box, valve))
                         elif action == 'parallel_group':
                             for sub in step.get('actions', []):
                                 sub_action = sub.get('action')
                                 if sub_action == 'valve_on':
-                                    self.mqtt.set_valve(sub.get('box', 1), sub.get('valve', 1), False)
+                                    self._pub_valve(sub.get('box', 1), sub.get('valve', 1), False)
                                     with self._lock:
                                         self._open_valves.discard((sub.get('box', 1), sub.get('valve', 1)))
                                 elif sub_action == 'pump_on':   # Fix #1: close pump started in group
-                                    self.mqtt.set_pump(False)
+                                    self._pub_pump(False)
                                     with self._lock:
                                         self._pump_open = False
             except Exception as exc:
@@ -312,23 +344,33 @@ class IrrigationScheduler:
             finally:
                 watchdog.cancel()
                 if pump_used:                        # Fix #2: stop pump however it was started
-                    self.mqtt.set_pump(False)
+                    self._pub_pump(False)
                 # Close whatever the script left open: an untimed valve_on stays
                 # open by design, and a stop can interrupt anywhere. Pump first,
                 # then valves, so it never runs against closed ones.
                 with self._lock:
                     leftover = sorted(self._open_valves)
                 for lb, lv in leftover:
-                    self.mqtt.set_valve(lb, lv, False)
+                    self._pub_valve(lb, lv, False)
                 with self._lock:
                     self._open_valves.clear()
                     self._pump_open = False
                     self._running = None
+                    failures = self._publish_failures
 
                 if outcome == 'completed' and self._stop_event.is_set():
                     outcome = 'stopped'
                     detail = (f'exceeded max_script_duration ({self._max_duration}s)'
                               if watchdog_fired.is_set() else 'stopped manually')
+                # A command that never left the MQTT client did not reach a valve.
+                # Report that rather than letting the run look like a clean success.
+                if failures:
+                    note = (f'{failures} MQTT command(s) never left the client — '
+                            f'the controller may not have received them')
+                    if outcome == 'completed':
+                        outcome, detail = 'error', note
+                    else:
+                        detail = f'{detail}; {note}' if detail else note
                 database.finish_run(run_id, outcome, detail)
 
                 self.socketio.emit('script_status', {
@@ -362,6 +404,6 @@ class IrrigationScheduler:
         })
 
         for box, valve in sorted(open_valves):
-            self.mqtt.set_valve(box, valve, True)
+            self._pub_valve(box, valve, True)
         if pump_open:
-            self.mqtt.set_pump(True)
+            self._pub_pump(True)

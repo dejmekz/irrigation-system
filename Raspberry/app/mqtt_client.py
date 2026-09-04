@@ -40,7 +40,11 @@ class MQTTClient:
             )
 
         self._first_connect = True
-        self._esp32_online = False
+        # None until the first irrigation/status message. The ESP32 publishes
+        # 'online' retained on connect and registers 'offline' as its LWT, so the
+        # broker always holds a value — None means we have not subscribed long
+        # enough to have received it, which is not the same as "offline".
+        self._esp32_online: bool | None = None
         self._esp32_online_timer: threading.Timer | None = None
         self.on_esp32_online: Callable[[], None] | None = None
 
@@ -112,6 +116,13 @@ class MQTTClient:
         with self._state_lock:
             return dict(self.gate_state)
 
+    def esp32_status(self) -> bool | None:
+        """Whether the ESP32 is reachable, per its retained irrigation/status
+        message and LWT. None means no status has been received yet — callers
+        must not read that as "online"."""
+        with self._state_lock:
+            return self._esp32_online
+
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
@@ -158,13 +169,16 @@ class MQTTClient:
                 and parts[0] == TOPIC_BASE
                 and parts[1] == 'status'):
             if payload == 'offline':
-                self._esp32_online = False
                 with self._state_lock:
+                    self._esp32_online = False
                     self.state = {'pump': 'OFF'}
                     snapshot = copy.deepcopy(self.state)
+                self.socketio.emit('esp32_status', {'online': False})
                 self.socketio.emit('state_update', snapshot)
             elif payload == 'online':
-                self._esp32_online = True
+                with self._state_lock:
+                    self._esp32_online = True
+                self.socketio.emit('esp32_status', {'online': True})
                 if self.on_esp32_online:
                     # Cancel any pending timer before starting a new one
                     if self._esp32_online_timer is not None:
@@ -187,7 +201,9 @@ class MQTTClient:
                 and parts[0] == TOPIC_BASE
                 and parts[1] == 'hw_status'):
             # Ignore retained hw_status delivered after ESP32 goes offline
-            if not self._esp32_online:
+            with self._state_lock:
+                online = self._esp32_online
+            if not online:
                 return
             try:
                 hw = json.loads(payload)

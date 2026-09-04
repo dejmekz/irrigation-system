@@ -103,6 +103,9 @@
           A <strong>Valve ON</strong> step with a duration closes the valve again when the
           time is up. With duration <strong>0</strong> it stays open until a later
           <strong>Valve OFF</strong> step — the script always closes everything when it ends.
+          No single valve may stay open for <strong>{{ valve_max_on // 60 }} minutes</strong>
+          or more in total: the controller enforces that cap in firmware and would
+          close the valve mid-script, so saving is refused instead.
         </div>
 
         <div id="steps-list" class="steps-container">
@@ -362,7 +365,13 @@ function saveScript() {
       pump_box: pumpBoxVal ? parseInt(pumpBoxVal) : null,
       pump_delay: pumpDelayUnit === 'min' ? pumpDelayRaw * 60 : pumpDelayRaw,
     }),
-  }).then(() => { editorModal.hide(); location.reload(); });
+  }).then(r => r.json().catch(() => ({})).then(data => {
+    // The API now rejects a script that would hold a valve open past the
+    // firmware's cap. Saving used to reload regardless and silently discard it.
+    if (!r.ok) { alert(data.error || `Could not save (HTTP ${r.status})`); return; }
+    editorModal.hide();
+    location.reload();
+  }));
 }
 
 function deleteScript(id) {

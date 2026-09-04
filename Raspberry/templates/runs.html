@@ -10,7 +10,8 @@
 </div>
 <p class="text-muted small">
   Every run, including the ones that did <em>not</em> water — skipped by a gate,
-  missed by the scheduler, or blocked by another script still running.
+  missed by the scheduler, blocked by another script still running, or aborted
+  because the ESP32 controller was offline.
 </p>
 
 <div class="card shadow-sm">
@@ -56,6 +57,8 @@
             <span class="badge bg-danger"><i class="bi bi-exclamation-triangle me-1"></i>missed</span>
             {% elif r.outcome == 'blocked' %}
             <span class="badge bg-warning text-dark"><i class="bi bi-sign-stop me-1"></i>blocked</span>
+            {% elif r.outcome == 'offline' %}
+            <span class="badge bg-danger"><i class="bi bi-cpu me-1"></i>offline</span>
             {% else %}
             <span class="badge bg-danger"><i class="bi bi-x-lg me-1"></i>{{ r.outcome }}</span>
             {% endif %}
