@@ -69,50 +69,50 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 | `POST` | `/firmware/upload` | Upload new `.bin` (field: `firmware`); sets the manifest version from the image |
 | `POST` | `/firmware/trigger` | Publishes `irrigation/cmd/ota_update` via MQTT |
 
-### OTA downloads truncate intermittently — retry until one completes
+### OTA failures are brownouts — this is a power supply problem
 
-**The failure is intermittent, and neither image size nor build verbosity
-explains it.** Two earlier revisions of this file claimed otherwise; both were
-wrong, and both were wrong because they generalised from a handful of runs of a
-process that fails at random. The full record, so nobody has to repeat it:
+**Root cause, confirmed.** Every failed OTA resets with
+`esp_reset_reason() == 9` (`ESP_RST_BROWNOUT`); every successful one resets with
+`3` (`ESP_RST_SW`, the normal restart after flashing). Measured over 13 attempts
+of the same image, ~30% fail:
 
-| Version | Size | `CORE_DEBUG_LEVEL` | Result |
-|---|---|---|---|
-| v12 | 1,016,768 | 3 | failed twice — ~6 s, ~89 kB transferred |
-| v12 | 1,006,752 | 1 | flashed |
-| v13 | 1,006,800 | 1 | flashed |
-| v14 | 1,007,024 | 1 | flashed |
-| v15 (+16 kB ballast) | **1,023,520** | 1 | **flashed** |
-| v16 | 1,007,024 | 1 | failed 4× (237 / 745 / 547 kB), then flashed (987 kB) |
+| Result | Transferred | Reset reason |
+|---|---|---|
+| flashed | 986 kB | 3 — SW |
+| failed | 156 kB | **9 — BROWNOUT** |
+| failed | 514 kB | **9 — BROWNOUT** |
+| failed | 757 kB | **9 — BROWNOUT** |
 
-- **Size is ruled out.** v15 was deliberately padded to 1,023,520 bytes — larger
-  than the v12 image that failed twice — and flashed without trouble.
-- **Verbosity is not established.** v16 is byte-identical code to v14 at the
-  same size and debug level, and failed four times in a row before succeeding.
-  The v12 failures at level 3 were most likely the same intermittent fault.
-- **What actually happens:** the download breaks at a different point every
-  time — 89, 237, 547, 745 kB — and sometimes runs to completion. The partition
-  table is not involved (v14+ report it in the heartbeat; both slots are the
-  full 1.25 MB, ~300 kB more than any image here).
+The 3.3 V rail collapses under WiFi receive plus flash erase/write running
+together, the brownout detector fires, and the chip resets partway through the
+download. That accounts for every symptom that made this so hard to pin down:
 
-**The root cause is unknown.** Candidates not yet separated: WiFi link quality,
-something in Apache or the TCP path, and the ESP32's own buffering. It is worth
-noting the original diagnosis in this project — a truncated download — matches
-the evidence better than either theory that replaced it.
+- **Random truncation points** — the brownout lands wherever it lands.
+- **No `Update` error code** — the chip dies before any error path executes,
+  which is why the firmware's captured `ota_err` stays null on every failure.
+- **Intermittent** — it depends on supply margin, not on anything in the image.
 
-**Mitigation: just retry.** A failed OTA is harmless; esp32FOTA leaves the
-running partition alone and reboots into the existing firmware. Space attempts
-by ~30 s and avoid polling the Pi during the transfer — the successful runs
-correlate with a quiet server, though the sample is far too small to call that
-a cause.
+Note the relays are already off during an OTA (`allOff()` runs first), so this is
+the bare WiFi + flash-write load. A rail that is marginal there has little
+headroom for relays switching during normal irrigation.
 
-**Reading the outcome.** Compare `Total kBytes` from
-`curl -s 'http://localhost/server-status?auto'` on the Pi before and after: a
-completed flash moves ~985 kB, and anything less is a truncated attempt. The
-device version in `/api/state` is the definitive check. Note that a rejected or
-broken transfer still logs a normal 200 server-side, because esp32FOTA opens
-the connection before it decides anything — so the server log alone cannot tell
-you what happened.
+**The fix is hardware, not firmware:** bulk capacitance close to the ESP32
+(470-1000 µF plus a 0.1 µF ceramic), a supply with real headroom at 3.3 V, and
+short thick power leads. Do not disable the brownout detector — it is the only
+thing preventing a corrupt flash write.
+
+**Three earlier explanations in this file were wrong** — an image size ceiling,
+a mismatched partition table, and build verbosity. Each came from generalising a
+handful of runs of a process that fails randomly ~30% of the time. What settled
+it was making the device report its own reset reason instead of inferring cause
+from outcomes.
+
+**Diagnosing a future failure.** The heartbeat carries `rst` (and `ota_err` /
+`ota_fails` when an OTA failure path did run). A real flash alternates the
+partition, so comparing `part.run` across a reboot is a reliable success check —
+more reliable than the version, which is unchanged when re-flashing the same
+image. `Total kBytes` from `curl -s 'http://localhost/server-status?auto'` on the
+Pi moves ~986 kB for a complete transfer.
 
 ### Version rule
 
@@ -214,5 +214,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 16 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 19 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local/firmware/manifest.json` | Manifest URL (Apache, port 80) |

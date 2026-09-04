@@ -8,6 +8,20 @@
 #include "config.h"
 #include <esp_task_wdt.h>
 #include <esp_ota_ops.h>
+#include <Update.h>
+#include <esp_system.h>
+
+// Why the last OTA failed, kept across the reboot that follows it.
+// esp32FOTA throws this away: every partial write is reported as "Premature end
+// of stream" whether the socket actually broke (UPDATE_ERROR_STREAM 6) or a
+// flash erase/write failed (UPDATE_ERROR_ERASE 2 / UPDATE_ERROR_WRITE 1), which
+// are very different faults with very different fixes. NOINIT rather than
+// RTC_DATA so a software reset preserves it; the magic distinguishes real data
+// from the garbage a cold boot leaves behind.
+#define OTA_RTC_MAGIC 0x07A0FA11UL
+RTC_NOINIT_ATTR static uint32_t otaMagic;
+RTC_NOINIT_ATTR static int otaLastError;
+RTC_NOINIT_ATTR static int otaFailCount;
 
 // Plain-text version marker embedded in the image. FIRMWARE_VERSION is
 // otherwise compiled into instructions and heartbeat arguments, so nothing can
@@ -460,8 +474,22 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
             lcdLine(2, "");
             lcdLine(3, "");
             fota.execOTA(); // reboots on success; falls through only on failure
-            log_e("OTA update failed");
+
+            // Reached only on failure. Capture the real reason before restarting.
+            if (otaMagic != OTA_RTC_MAGIC)
+            {
+                otaMagic = OTA_RTC_MAGIC;
+                otaFailCount = 0;
+            }
+            otaLastError = (int)Update.getError();
+            otaFailCount++;
+            log_e("OTA update failed, Update error #%d (failure %d)",
+                  otaLastError, otaFailCount);
+
+            char errline[LCD_COLS + 1];
+            snprintf(errline, sizeof(errline), " OTA fail err=%d", otaLastError);
             lcdLine(0, "  OTA: failed!      ");
+            lcdLine(2, errline);
             lcdLine(1, "  Restarting...     ");
             delay(3000);
             ESP.restart();
@@ -528,13 +556,29 @@ void publishHeartbeat()
              next ? next->label : "?",
              next ? (unsigned)next->size : 0);
 
+    // Carry the last OTA failure out with the heartbeat: the Pi logs heartbeats
+    // verbatim, so the reason survives the reboot and needs no extra plumbing.
+    // Why the chip last reset. If an OTA failure path ran, this is 3 (SW) and
+    // ota_err says what went wrong. If it is 9 (BROWNOUT) or 4 (PANIC) instead,
+    // the device died mid-flash and never reached that code — which would
+    // explain both the random truncation points and the missing error code, and
+    // would make this a power problem rather than a network or library one.
+    int rst = (int)esp_reset_reason();
+
+    char otaInfo[64] = "";
+    if (otaMagic == OTA_RTC_MAGIC && otaFailCount > 0)
+        snprintf(otaInfo, sizeof(otaInfo), ",\"rst\":%d,\"ota_err\":%d,\"ota_fails\":%d",
+                 rst, otaLastError, otaFailCount);
+    else
+        snprintf(otaInfo, sizeof(otaInfo), ",\"rst\":%d", rst);
+
     char payload[288];
     if (active[0] == '\0')
-        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s%s}",
-                 FIRMWARE_VERSION, hwOk ? "true" : "false", part);
+        snprintf(payload, sizeof(payload), "{\"status\":\"idle\",\"fw\":%d,\"hw_ok\":%s%s%s}",
+                 FIRMWARE_VERSION, hwOk ? "true" : "false", part, otaInfo);
     else
-        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d,\"hw_ok\":%s%s}",
-                 active, FIRMWARE_VERSION, hwOk ? "true" : "false", part);
+        snprintf(payload, sizeof(payload), "{\"status\":\"active\",\"active\":\"%s\",\"fw\":%d,\"hw_ok\":%s%s%s}",
+                 active, FIRMWARE_VERSION, hwOk ? "true" : "false", part, otaInfo);
 
     mqtt.publish(MQTT_HEARTBEAT_TOPIC, payload, true);
 }
