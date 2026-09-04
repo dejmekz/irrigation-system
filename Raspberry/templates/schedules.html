@@ -4,7 +4,8 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
   <h4 class="mb-0"><i class="bi bi-clock me-2"></i>Schedules</h4>
-  <button class="btn btn-primary" onclick="openScheduleEditor()">
+  <button class="btn btn-primary" onclick="openScheduleEditor()"
+          {% if not scripts %}disabled title="Create a script first"{% endif %}>
     <i class="bi bi-plus-lg me-1"></i>New Schedule
   </button>
 </div>
@@ -188,13 +189,20 @@ function saveSchedule() {
   const gate_topic = document.getElementById('sched-gate-topic').value.trim();
   const gate_payload = document.getElementById('sched-gate-payload').value.trim();
   if (!name || !cron) { alert('Fill in name and schedule.'); return; }
+  // With no scripts the select is empty and this was NaN, which the API stored
+  // as a null script_id — a schedule that then vanished from its own list.
+  if (!Number.isInteger(script_id)) { alert('Pick a script for this schedule.'); return; }
   const url = id ? `/api/schedules/${id}` : '/api/schedules';
   const method = id ? 'PUT' : 'POST';
   fetch(url, {
     method,
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name, script_id, cron, enabled: true, gate_topic, gate_payload}),
-  }).then(() => { schedModal.hide(); location.reload(); });
+  }).then(r => r.json().catch(() => ({})).then(data => {
+    if (!r.ok) { alert(data.error || `Could not save (HTTP ${r.status})`); return; }
+    schedModal.hide();
+    location.reload();
+  }));
 }
 
 function toggleSchedule(id, enabled) {

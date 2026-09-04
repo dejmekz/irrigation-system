@@ -1,6 +1,7 @@
 import copy
 import json
 import threading
+import time
 import paho.mqtt.client as mqtt_lib
 from .database import log_message
 from flask_socketio import SocketIO
@@ -94,6 +95,16 @@ class MQTTClient:
 
     def all_off(self) -> bool:
         return self.publish(f'{TOPIC_BASE}/cmd/stop_all', '')
+
+    def _mark_since(self, key: str, on: bool):
+        """Record when an output turned on so the dashboard can show how long it
+        has been running. Caller holds _state_lock. Lives inside self.state so
+        the ESP32 going offline clears it with everything else."""
+        since = self.state.setdefault('since', {})
+        if on:
+            since.setdefault(key, time.time())
+        else:
+            since.pop(key, None)
 
     def get_state(self):
         with self._state_lock:                       # Fix #11: return snapshot, not live ref
@@ -194,6 +205,7 @@ class MQTTClient:
                 and parts[2] == 'state'):
             with self._state_lock:
                 self.state['pump'] = payload
+                self._mark_since('pump', payload == 'ON')
                 snapshot = copy.deepcopy(self.state)
             self.socketio.emit('state_update', snapshot)
 
@@ -239,6 +251,7 @@ class MQTTClient:
                         and parts[3] == 'valve'
                         and parts[5] == 'state'):
                     self.state[box]['valves'][parts[4]] = payload
+                    self._mark_since(f'{box}/{parts[4]}', payload == 'ON')
                     snapshot = copy.deepcopy(self.state)
             if snapshot is not None:
                 self.socketio.emit('state_update', snapshot)

@@ -20,6 +20,10 @@ system:
   # firmware closes its valves after WIFI_ACTIVE_SAFETY_MS and the Pi re-asserts
   # state on reconnect, so a reboot cycle (~10-20 s) should not fail a run.
   controller_offline_grace: 60  # seconds
+  # Close any valve or the pump if it is left on this long with no script
+  # managing it — a dashboard mis-click otherwise waters until the firmware's
+  # valve_max_on cap an hour later. Set to 0 to disable.
+  manual_valve_timeout: 1800    # seconds
 
 web:
   host: "0.0.0.0"

@@ -6,7 +6,7 @@
   <h4 class="mb-0"><i class="bi bi-grid-3x3-gap me-2"></i>Dashboard</h4>
   <div class="d-flex gap-2 align-items-center">
     <button class="btn btn-sm pump-btn btn-outline-secondary" id="pump-btn" onclick="togglePump()" data-state="off">
-      <i class="bi bi-arrow-up-circle me-1"></i>Pump
+      <i class="bi bi-arrow-up-circle me-1"></i>Pump<span class="ms-1 output-elapsed" data-elapsed-key="pump"></span>
     </button>
     <button class="btn btn-danger" onclick="emergencyStop()">
       <i class="bi bi-stop-circle-fill me-1"></i>Stop All
@@ -46,6 +46,7 @@
             data-state="off">
             <i class="bi bi-water"></i>
             <div class="small mt-1">V{{ valve }}</div>
+            <div class="valve-elapsed output-elapsed" data-elapsed-key="{{ box }}/{{ valve }}"></div>
           </button>
           {% endfor %}
         </div>
@@ -60,6 +61,28 @@
 {% block scripts %}
 <script>
 const initialState = {{ state | tojson }};
+
+// How long each output has been on, from the server's clock. Answers "how long
+// has that been running?" for a valve opened by hand, which previously had no
+// indication anywhere and no bound short of the firmware's hour-long cap.
+let sinceMap = {};
+
+function fmtElapsed(startEpoch) {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - startEpoch));
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}:${String(secs % 60).padStart(2, '0')}`;
+  return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, '0')}`;
+}
+
+function tickElapsed() {
+  document.querySelectorAll('.output-elapsed').forEach(el => {
+    const started = sinceMap[el.dataset.elapsedKey];
+    el.textContent = started ? fmtElapsed(started) : '';
+  });
+}
+
+setInterval(tickElapsed, 1000);
+
 applyState(initialState);
 
 function applyState(state) {
@@ -88,6 +111,8 @@ function applyState(state) {
       }
     }
   }
+  sinceMap = state.since || {};
+  tickElapsed();
   // Hardware health badges
   if (state.hw && typeof state.hw === 'object') {
     const row = document.getElementById('hw-status-row');

@@ -23,10 +23,14 @@ KEEPALIVE_INTERVAL_S = 300
 # real outage is reported as missed rather than watering hours late.
 MISFIRE_GRACE_S = 300
 
+# How often to look for outputs left on that no script is managing.
+UNMANAGED_CHECK_S = 30
+
 
 class IrrigationScheduler:
     def __init__(self, mqtt_client: MQTTClient, socketio: SocketIO,
-                 max_script_duration: int = 7200, offline_grace: int = 60):
+                 max_script_duration: int = 7200, offline_grace: int = 60,
+                 manual_timeout: int = 1800):
         self.mqtt = mqtt_client
         self.socketio = socketio
         self._scheduler = BackgroundScheduler(
@@ -49,10 +53,70 @@ class IrrigationScheduler:
         # whether any of that overlapped valves this script had opened.
         self._offline_seconds = 0
         self._offline_while_open = False
+        self._manual_timeout = manual_timeout
+        # Outputs reported ON that no running script opened -> when we first saw
+        # them that way. Keyed (box, valve), or the string 'pump'.
+        self._unmanaged_since: dict[object, float] = {}
 
     def start(self):
         self._scheduler.add_listener(self._on_job_missed, EVENT_JOB_MISSED)
+        if self._manual_timeout > 0:
+            self._scheduler.add_job(
+                self._check_unmanaged, 'interval', seconds=UNMANAGED_CHECK_S,
+                id='unmanaged_outputs', replace_existing=True,
+            )
         self._scheduler.start()
+
+    def _check_unmanaged(self):
+        """Close anything left on that no script is managing — a valve opened
+        from the dashboard and forgotten, or one a stopped script did not track.
+        Until now the only bound on a mis-click was the firmware's 60 minute
+        VALVE_MAX_ON_MS, i.e. an hour of unattended watering."""
+        state = self.mqtt.get_state()
+        now = time.monotonic()
+        with self._lock:
+            script_valves = set(self._open_valves)
+            script_pump = self._pump_open
+
+        live: set[object] = set()
+        for box_key, data in state.items():
+            if not isinstance(data, dict) or not data.get('valves'):
+                continue
+            for valve_key, value in data['valves'].items():
+                if value != 'ON':
+                    continue
+                try:
+                    key = (int(box_key), int(valve_key))
+                except (TypeError, ValueError):
+                    continue
+                if key not in script_valves:
+                    live.add(key)
+        if state.get('pump') == 'ON' and not script_pump:
+            live.add('pump')
+
+        # Forget anything that has since gone off, so its timer restarts clean.
+        for key in list(self._unmanaged_since):
+            if key not in live:
+                del self._unmanaged_since[key]
+
+        for key in sorted(live, key=str):
+            first = self._unmanaged_since.setdefault(key, now)
+            if now - first < self._manual_timeout:
+                continue
+            del self._unmanaged_since[key]
+            if key == 'pump':
+                self.mqtt.set_pump(False)
+                what = 'pump'
+            else:
+                self.mqtt.set_valve(key[0], key[1], False)   # type: ignore[index]
+                what = f'valve {key[0]}/{key[1]}'            # type: ignore[index]
+            msg = (f'Closed {what}: left on for {self._manual_timeout}s with no '
+                   f'script managing it')
+            print(msg)
+            database.log_message('system/manual_timeout', msg, 'sys')
+            self.socketio.emit('log_entry', {
+                'topic': 'system/manual_timeout', 'payload': msg, 'direction': 'sys',
+            })
 
     def _on_job_missed(self, event):
         """A run APScheduler could not start within the grace period. Without
@@ -223,12 +287,16 @@ class IrrigationScheduler:
             self._pub_pump(True)
 
     def run_script(self, script_id: int, trigger: str = 'manual',
-                   schedule_id: int | None = None, schedule_name: str | None = None):
+                   schedule_id: int | None = None,
+                   schedule_name: str | None = None) -> dict:
+        """Start a script. Returns {'ok': True, ...} or, when the run is
+        refused, {'ok': False, 'reason': ..., 'error': ...} so a caller can say
+        what happened instead of reporting every request as accepted."""
         script = database.get_script(script_id)
         if not script:
             database.record_run(script_id, f'script {script_id}', trigger, 'error',
                                 'script not found', schedule_id, schedule_name)
-            return
+            return {'ok': False, 'reason': 'not_found', 'error': 'script not found'}
         # Nothing downstream ever checks whether the controller is reachable, so
         # without this a run against an offline ESP32 publishes into the void,
         # waters nothing, and is recorded as a clean 'completed'.
@@ -244,7 +312,7 @@ class IrrigationScheduler:
                 'topic': 'system/offline', 'payload': msg, 'direction': 'sys',
             })
             print(msg)
-            return
+            return {'ok': False, 'reason': 'offline', 'error': msg}
 
         steps = json.loads(script['steps'])
         pump_box = script.get('pump_box')
@@ -264,10 +332,10 @@ class IrrigationScheduler:
             # happened because the 19:40 one was still going" is exactly the
             # question this history exists to answer. (DB write is outside the
             # lock deliberately.)
+            msg = f'another script was already running: {blocked_by!r}'
             database.record_run(script_id, script['name'], trigger, 'blocked',
-                                f'another script was already running: {blocked_by!r}',
-                                schedule_id, schedule_name)
-            return
+                                msg, schedule_id, schedule_name)
+            return {'ok': False, 'reason': 'blocked', 'error': msg}
 
         run_id = database.start_run(script_id, script['name'], trigger,
                                     schedule_id, schedule_name)
@@ -365,6 +433,12 @@ class IrrigationScheduler:
                             self._pub_valve(box, valve, False)
                             with self._lock:
                                 self._open_valves.discard((box, valve))
+                        elif action == 'pump_on':
+                            # Was asymmetric with valve_on: a timed pump_on ran
+                            # the pump for its duration and then left it going.
+                            self._pub_pump(False)
+                            with self._lock:
+                                self._pump_open = False
                         elif action == 'parallel_group':
                             for sub in step.get('actions', []):
                                 sub_action = sub.get('action')
@@ -433,6 +507,7 @@ class IrrigationScheduler:
                 })
 
         threading.Thread(target=execute, daemon=True).start()
+        return {'ok': True, 'running': script['name'], 'steps': len(steps)}
 
     def stop_script(self):
         with self._lock:                             # Fix #4: only arm stop if a script is running

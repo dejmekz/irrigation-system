@@ -125,7 +125,12 @@
   <div class="step-row card mb-2">
     <div class="card-body p-2">
       <div class="row g-2 align-items-center">
-        <div class="col-auto step-handle text-muted"><i class="bi bi-grip-vertical"></i></div>
+        <div class="col-auto d-flex flex-column step-move">
+          <button class="btn btn-sm btn-link p-0 text-muted" type="button" title="Move up"
+                  onclick="moveStep(this, -1)"><i class="bi bi-caret-up-fill"></i></button>
+          <button class="btn btn-sm btn-link p-0 text-muted" type="button" title="Move down"
+                  onclick="moveStep(this, 1)"><i class="bi bi-caret-down-fill"></i></button>
+        </div>
         <div class="col-auto">
           <select class="form-select form-select-sm step-action" onchange="onActionChange(this)" style="min-width:165px">
             <option value="valve_on">Valve ON</option>
@@ -298,18 +303,11 @@ function addParallelAction(btn, data) {
 
   if (data) {
     arow.querySelector('.sub-action').value = data.action;
-    onSubActionChange(arow.querySelector('.sub-action'));
     if (data.box) arow.querySelector('.sub-box').value = data.box;
     if (data.valve) arow.querySelector('.sub-valve').value = data.valve;
   }
 
   list.appendChild(clone);
-}
-
-function onSubActionChange(sel) {
-  const row = sel.closest('.parallel-action-row');
-  const isValve = sel.value === 'valve_on' || sel.value === 'valve_off';
-  row.querySelector('.sub-valve').style.display = isValve ? '' : 'none';
 }
 
 function removeParallelAction(btn) {
@@ -318,6 +316,18 @@ function removeParallelAction(btn) {
 
 function removeStep(btn) {
   btn.closest('.step-row').remove();
+}
+
+// Step order is the script. The grip icon that used to sit here implied
+// drag-to-reorder and did nothing at all; these actually move a step, and work
+// on a phone, which is where this page usually gets opened.
+function moveStep(btn, dir) {
+  const row = btn.closest('.step-row');
+  const list = document.getElementById('steps-list');
+  const sibling = dir < 0 ? row.previousElementSibling : row.nextElementSibling;
+  if (!sibling || !sibling.classList.contains('step-row')) return;
+  if (dir < 0) list.insertBefore(row, sibling);
+  else list.insertBefore(sibling, row);
 }
 
 function collectSteps() {
@@ -380,7 +390,13 @@ function deleteScript(id) {
 }
 
 function runScript(id) {
-  fetch(`/api/scripts/${id}/run`, {method: 'POST'});
+  // The endpoint reports refusals now — blocked by another script, controller
+  // offline, script gone. Clicking Play used to look identical in every case.
+  fetch(`/api/scripts/${id}/run`, {method: 'POST'})
+    .then(r => r.json().catch(() => ({})).then(data => {
+      if (!r.ok) alert(data.error || `Could not start the script (HTTP ${r.status})`);
+    }))
+    .catch(() => alert('Could not start the script: the web app is unreachable.'));
 }
 
 function stopScript() {

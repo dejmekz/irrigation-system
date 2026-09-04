@@ -30,10 +30,28 @@ def _localise(row: dict[str, Any], *fields: str) -> dict[str, Any]:
     return row
 
 
+# Trim the capped tables on every Nth insert rather than every one. The old
+# `id NOT IN (SELECT ... LIMIT n)` anti-join rescanned the whole table for each
+# MQTT message, which on a Pi is real work for a log nobody is reading.
+_TRIM_EVERY = 50
+
+
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Off by default in SQLite, so schedules.script_id was a comment rather than
+    # a constraint: a schedule could reference a script that never existed, and
+    # get_schedules()'s inner join then hid it from the UI that created it.
+    conn.execute('PRAGMA foreign_keys = ON')
     return conn
+
+
+def _trim(conn, table: str, keep: int, last_id: int | None):
+    """Keep the newest `keep` rows. Deleting by an id range uses the primary
+    key index; the previous anti-join did not."""
+    if last_id is None or last_id % _TRIM_EVERY:
+        return
+    conn.execute(f'DELETE FROM {table} WHERE id <= ?', (last_id - keep,))
 
 
 def init_db():
@@ -100,14 +118,11 @@ def init_db():
 def log_message(topic: str, payload: str, direction: str):
     try:                                             # Fix #14: don't crash MQTT callback on DB error
         with get_db() as conn:
-            conn.execute(
+            cur = conn.execute(
                 'INSERT INTO message_log (topic, payload, direction) VALUES (?, ?, ?)',
                 (topic, str(payload), direction),
             )
-            conn.execute(
-                'DELETE FROM message_log WHERE id NOT IN '
-                '(SELECT id FROM message_log ORDER BY id DESC LIMIT 1000)'
-            )
+            _trim(conn, 'message_log', 1000, cur.lastrowid)
     except Exception:
         pass
 
@@ -127,11 +142,7 @@ def start_run(script_id: int | None, script_name: str, trigger: str,
                 'schedule_name, trigger, outcome) VALUES (?, ?, ?, ?, ?, ?)',
                 (script_id, script_name, schedule_id, schedule_name, trigger, 'running'),
             )
-            conn.execute(
-                'DELETE FROM run_history WHERE id NOT IN '
-                '(SELECT id FROM run_history ORDER BY id DESC LIMIT ?)',
-                (_RUN_HISTORY_LIMIT,),
-            )
+            _trim(conn, 'run_history', _RUN_HISTORY_LIMIT, cur.lastrowid)
             return cur.lastrowid
     except Exception:      # history must never take the irrigation thread down
         return None
@@ -208,8 +219,19 @@ def update_script(script_id: int, name: str, steps: list[dict[str, Any]], pump_b
 
 def delete_script(script_id: int):
     with get_db() as conn:
-        conn.execute('DELETE FROM scripts WHERE id = ?', (script_id,))
+        # Schedules first: with foreign keys now enforced, removing the script
+        # while rows still point at it is rejected outright.
         conn.execute('DELETE FROM schedules WHERE script_id = ?', (script_id,))
+        conn.execute('DELETE FROM scripts WHERE id = ?', (script_id,))
+
+
+def script_exists(script_id) -> bool:
+    if not isinstance(script_id, int) or isinstance(script_id, bool):
+        return False
+    with get_db() as conn:
+        return conn.execute(
+            'SELECT 1 FROM scripts WHERE id = ?', (script_id,)
+        ).fetchone() is not None
 
 
 def get_schedules():
