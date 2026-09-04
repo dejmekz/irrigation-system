@@ -43,10 +43,10 @@
 // The Pi manifest version must match for the ESP32 to recognise it as an update.
 #define FIRMWARE_VERSION  11
 #define FIRMWARE_TYPE     "irrigation-esp32c3"
-// Served by nginx (port 8090), not the Flask dev server on :5000 — Werkzeug
+// Served by Apache (port 80), not the Flask dev server on :5000 — Werkzeug
 // truncates the 1 MB image to a slow client, which fails the OTA image check.
 // The manifest's host/port fields point the binary download at the same place.
-#define OTA_MANIFEST_URL  "http://raspi4server.local:8090/firmware/manifest.json"
+#define OTA_MANIFEST_URL  "http://raspi4server.local/firmware/manifest.json"
 
 // ---- WiFi reconnect ----
 #define WIFI_RETRY_INTERVAL_MS   10000   // wait 10 s between reconnect attempts

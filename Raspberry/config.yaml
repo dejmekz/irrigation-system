@@ -17,14 +17,13 @@ web:
   port: 5000
   secret_key: ""  # override with SECRET_KEY env var
 
-# OTA firmware. The .bin is served statically by nginx (see nginx-firmware.conf),
-# not by Flask: the Werkzeug dev server truncates a 1 MB download to a slow
-# client like the ESP32, which then fails its image check and rolls back.
-# `dir` is written by /firmware/upload and read by nginx.
+# OTA firmware. The .bin is served statically by the Apache already running on
+# this host, not by Flask: the Werkzeug dev server truncates a 1 MB download to
+# a slow client like the ESP32, which then fails its image check and rolls back.
+# `dir` is written by /firmware/upload and read by that static server.
 # `host`/`port` are stamped into manifest.json and tell the ESP32 where to fetch
-# the binary. Port 8090 because Apache already owns :80 on this host.
-# Empty dir = ./firmware (local dev only).
+# the binary. Empty dir = ./firmware (local dev only).
 firmware:
   dir: /var/www/html/firmware
   host: raspi4server.local
-  port: 8090
+  port: 80

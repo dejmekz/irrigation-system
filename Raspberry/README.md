@@ -37,13 +37,12 @@ MQTT broker: Mosquitto on `localhost:1883`.
 
 ## Firmware serving
 
-The ESP32's OTA binary is served **statically by nginx on port 8090** (see
-`nginx-firmware.conf`), from the directory named by `firmware.dir` in
-`config.yaml` (`/var/www/html/firmware` on the Pi — already writable by
-`openhabian` and readable by `www-data`). Port 8090 because Apache already owns
-:80 on this host. Flask keeps `/firmware/upload`, which writes the image
-atomically and stamps `firmware.host`/`firmware.port` into `manifest.json` so
-the ESP32 downloads from nginx.
+The ESP32's OTA binary is served **statically by the Apache already running on
+port 80**, from the directory named by `firmware.dir` in `config.yaml`
+(`/var/www/html/firmware` on the Pi — already writable by `openhabian` and
+readable by `www-data`, so no sudo is involved). Flask keeps `/firmware/upload`,
+which writes the image atomically and stamps `firmware.host`/`firmware.port`
+into `manifest.json` so the ESP32 downloads from Apache.
 
 This is not cosmetic: the Werkzeug dev server truncates a 1 MB download to a
 client as slow as the ESP32, and the flash then fails its checksum and rolls
@@ -65,7 +64,6 @@ config.yaml         Broker host/port, system dimensions, firmware dir (no secret
 .env.example        Credential template
 run.py              Entrypoint
 irrigation.service  systemd unit
-nginx-firmware.conf nginx site serving the OTA image statically on :8090
 setup.sh            One-shot install script for Pi
 requirements.txt
 ```
