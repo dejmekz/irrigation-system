@@ -73,6 +73,8 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 
 `FIRMWARE_VERSION` in `config.h` **must be bumped** before each build. The upload endpoint increments the manifest version to match. If both numbers are equal, no update is triggered.
 
+`manifest.json` is **not** in git — it is server-side state that the upload endpoint rewrites, so a tracked copy only ever drifts. The upload endpoint floors the new version at whatever the ESP32 last reported over MQTT, so a missing or stale manifest cannot leave you uploading images that never flash.
+
 ## Safety Features
 
 - **Valve max-open cap** — every valve is closed automatically once it has been open for `VALVE_MAX_ON_MS` (60 min), and the pump is stopped with it if that was the last open valve. This is the last-resort dead-man's switch: it fires even when WiFi, MQTT and the pump are all healthy, so a crashed or hung Pi controller cannot leave a valve open indefinitely. The timer starts on the OFF→ON transition and is *not* extended by the Pi's keepalive re-publishes. A valve closed this way is **latched**: further `ON` commands are refused (and answered with a retained `OFF` state) until an explicit `OFF`, a `stop_all`, or a reboot clears it, so a keepalive cannot silently reopen it.

@@ -63,7 +63,17 @@ def upload():
         data = {'type': 'irrigation-esp32c3', 'version': 0,
                 'bin': '/firmware/irrigation.bin'}
 
-    data['version'] = int(data.get('version', 0)) + 1
+    # esp32FOTA only flashes when the manifest version exceeds the version the
+    # device is running. A manifest that is missing (it is deliberately not in
+    # git — it is server-side state) or that has fallen behind the device would
+    # let uploads succeed while no OTA ever triggers, with nothing to show for
+    # it. Floor the version at whatever the ESP32 last reported over MQTT.
+    device_fw = 0
+    try:
+        device_fw = int(current_app.extensions['mqtt'].get_state().get('fw') or 0)
+    except Exception:
+        pass
+    data['version'] = max(int(data.get('version', 0)), device_fw) + 1
     # Always re-assert where the binary is actually served from, so the manifest
     # cannot drift away from the configured static host.
     data['host'] = cfg.get('host', 'raspi4server.local')
