@@ -76,6 +76,8 @@ During the update the LCD shows **"OTA: updating… Do not power off"**. The ESP
 - **Pump dry-run shutoff** — if no valve `set` command arrives for `PUMP_SAFETY_TIMEOUT_MS` (30 min) while the pump is running, everything is turned off. The Pi re-asserts the state of open valves every 5 minutes while a script runs, so steps longer than this are not cut short.
 - **WiFi safety shutoff** — if WiFi is lost while any valve or pump is active and stays lost for `WIFI_ACTIVE_SAFETY_MS` (30 s), all outputs are turned off automatically.
 - **Hardware task watchdog** — reboots the ESP32 if `loop()` stalls for longer than `TASK_WDT_TIMEOUT_S` (60 s).
+- **Relay write retry** — a relay change that the I2C bus rejects is retried immediately (3 attempts) and then once per second from `loop()` until it lands. The desired state is held in the shadow register, so a failed close is never quietly forgotten.
+- **Honest state reporting** — a valve is only reported over MQTT once the write actually reached the expander. A relay whose write failed keeps being reported as open until the retry confirms otherwise, rather than showing closed while still energised.
 - **Retained MQTT state** — all state topics are published as retained messages; after reconnect the Pi immediately receives current state.
 
 ## Project Setup
@@ -141,5 +143,5 @@ Key constants — edit here rather than in code:
 | `MQTT_RETRY_INTERVAL_MS` | 5 000 | Interval between MQTT reconnect attempts |
 | `HEARTBEAT_INTERVAL_MS` | 300 000 | Heartbeat publish interval (5 min) |
 | `TASK_WDT_TIMEOUT_S` | 60 | Hardware watchdog timeout |
-| `FIRMWARE_VERSION` | 9 | Bump before every OTA release build |
+| `FIRMWARE_VERSION` | 10 | Bump before every OTA release build |
 | `OTA_MANIFEST_URL` | `http://raspi4server.local:5000/firmware/manifest.json` | Pi manifest URL |

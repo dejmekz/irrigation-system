@@ -13,6 +13,16 @@
 static uint8_t pcfState[2] = {0xFF, 0xFF};
 static const uint8_t PCF_ADDR[2] = {PCF_ADDR_0, PCF_ADDR_1};
 
+// Set when every write attempt to an expander failed. pcfState still holds the
+// desired bits, so loop() re-flushes until the bus recovers: a failed OFF can
+// mean a valve is still energised, which must never be quietly forgotten.
+static bool pcfDirty[2] = {false, false};
+#define PCF_WRITE_ATTEMPTS 3
+
+// Defined further down with the MQTT code; the relay helpers below need them.
+void publishState(int box, int valve, bool on);
+void syncValvesFromShadow(int idx);
+
 // ---- Valve / pump state (for LCD) ----
 static bool valveOn[NUM_BOXES][VALVES_PER_BOX] = {};
 static bool pumpOn = false;
@@ -69,8 +79,32 @@ bool pcfFlush(int idx)
     return ok;
 }
 
-// box 1-4, valve 1-3
-void setRelay(int box, int valve, bool on)
+// Flush with immediate retries, then hand off to the loop() retry if the bus is
+// still refusing. pcfState keeps the desired bits either way.
+bool pcfWrite(int idx)
+{
+    for (int attempt = 0; attempt < PCF_WRITE_ATTEMPTS; attempt++)
+        if (pcfFlush(idx))
+        {
+            pcfDirty[idx] = false;
+            return true;
+        }
+    pcfDirty[idx] = true;
+    return false;
+}
+
+// Decode the shadow register back into a logical "valve open" flag.
+bool relayBitOn(int idx, int bit)
+{
+#if RELAY_ACTIVE_LOW
+    return (pcfState[idx] & (1 << bit)) == 0;
+#else
+    return (pcfState[idx] & (1 << bit)) != 0;
+#endif
+}
+
+// box 1-4, valve 1-3 — returns false if the change did not reach the hardware.
+bool setRelay(int box, int valve, bool on)
 {
     int idx = (box <= 2) ? 0 : 1;
     int offset = ((box - 1) % 2) * 3; // 0 for box 1/3, 3 for box 2/4
@@ -88,11 +122,13 @@ void setRelay(int box, int valve, bool on)
         pcfState[idx] &= ~(1 << bit);
 #endif
 
-    if (!pcfFlush(idx))
+    if (!pcfWrite(idx))
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "PCF[%d] relay error!", idx);
         pcfErrUntil = millis() + 3000;
+        return false;
     }
+    return true;
 }
 
 // Turn all outputs off — called before any blocking reconnect
@@ -105,20 +141,19 @@ void allOff()
     pcfState[0] = pcfState[1] = 0x00;
     digitalWrite(PUMP_PIN, LOW);
 #endif
-    // Fix #3: check I2C result and retry once on failure so we don't
-    // report everything off while relays are still physically energised.
-    bool ok0 = pcfFlush(0);
-    bool ok1 = pcfFlush(1);
-    if (!ok0) ok0 = pcfFlush(0);
-    if (!ok1) ok1 = pcfFlush(1);
+    bool ok0 = pcfWrite(0);
+    bool ok1 = pcfWrite(1);
     if (!ok0 || !ok1)
     {
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), " allOff I2C error!  ");
         pcfErrUntil = millis() + 5000;
         log_e("allOff: PCF I2C write failed — relays may still be active!");
     }
-    memset(valveOn, 0, sizeof(valveOn));
-    memset(valveOnAt, 0, sizeof(valveOnAt));
+    // Only mark closed what the bus actually accepted. An expander that refused
+    // the write keeps reporting its valves open until the loop() retry lands,
+    // rather than claiming everything is off while relays are still energised.
+    if (ok0) syncValvesFromShadow(0);
+    if (ok1) syncValvesFromShadow(1);
     memset(valveLatched, 0, sizeof(valveLatched));
     pumpOn = false;
     lcdDirty = true;
@@ -275,12 +310,38 @@ void publishState(int box, int valve, bool on)
     }
 }
 
-void publishAllOff()
+// Publish the state we actually believe each output is in — not a blanket OFF.
+// A relay whose write failed stays reported as open until the retry confirms it.
+void publishAllState()
 {
     for (int b = 1; b <= NUM_BOXES; b++)
         for (int v = 1; v <= VALVES_PER_BOX; v++)
-            publishState(b, v, false);
-    publishState(0, -1, false);
+            publishState(b, v, valveOn[b - 1][v - 1]);
+    publishState(0, -1, pumpOn);
+}
+
+// A successful flush means the shadow register is what the hardware is doing:
+// bring the reported state in line with it and publish whatever moved. This is
+// also how a write that failed earlier gets reported once the bus recovers.
+void syncValvesFromShadow(int idx)
+{
+    bool connected = mqtt.connected();
+    for (int i = 0; i < 2; i++)
+    {
+        int box = idx * 2 + 1 + i;
+        for (int v = 1; v <= VALVES_PER_BOX; v++)
+        {
+            bool want = relayBitOn(idx, i * 3 + (v - 1));
+            if (valveOn[box - 1][v - 1] == want)
+                continue;
+            valveOn[box - 1][v - 1] = want;
+            if (want)
+                valveOnAt[box - 1][v - 1] = millis();
+            if (connected)
+                publishState(box, v, want);
+            lcdDirty = true;
+        }
+    }
 }
 
 // box 1-4, valve 1-3 — the one place a valve transition is applied: keeps the
@@ -299,16 +360,23 @@ void setValve(int box, int valve, bool on)
     if (!on)
         valveLatched[box - 1][valve - 1] = false;
 
-    bool wasOn = valveOn[box - 1][valve - 1];
-    valveOn[box - 1][valve - 1] = on;
-    // Stamp on the OFF->ON edge only, so a repeated ON (the Pi's keepalive
-    // re-publish) cannot push out the absolute open-time cap.
-    if (on && !wasOn)
-        valveOnAt[box - 1][valve - 1] = millis();
-    setRelay(box, valve, on);
-    publishState(box, valve, on);
-    if (on)
-        lastValveActivityAt = millis();
+    int idx = (box <= 2) ? 0 : 1;
+    if (setRelay(box, valve, on))
+    {
+        // syncValvesFromShadow stamps the OFF->ON edge and publishes, so a
+        // repeated ON (the Pi's keepalive) cannot push out the open-time cap.
+        syncValvesFromShadow(idx);
+        if (on)
+            lastValveActivityAt = millis();
+    }
+    else
+    {
+        // The write never reached the expander, so the relay did not move.
+        // Leave the reported state alone rather than publishing a change we did
+        // not achieve — a valve reported closed while still energised is exactly
+        // the failure this guards against. loop() retries until the bus is back.
+        log_e("Valve B%d:V%d write failed - state unchanged, retrying", box, valve);
+    }
     lcdDirty = true;
 }
 
@@ -342,7 +410,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
     else if (strcmp(topic, "irrigation/cmd/stop_all") == 0)
     {
         allOff();
-        publishAllOff();
+        publishAllState();
     }
     else if (strcmp(topic, "irrigation/cmd/ota_update") == 0)
     {
@@ -355,7 +423,7 @@ void mqttCallback(char *topic, byte *payload, unsigned int len)
         {
             log_i("OTA update found, flashing...");
             allOff();
-            publishAllOff();
+            publishAllState();
             lcdLine(0, "  OTA: updating...  ");
             lcdLine(1, "  Do not power off  ");
             lcdLine(2, "");
@@ -441,10 +509,7 @@ bool mqttReconnect()
     mqtt.subscribe("irrigation/box/+/valve/+/set", 1);
     mqtt.subscribe("irrigation/pump/set", 1);
     mqtt.subscribe("irrigation/cmd/+", 1);
-    for (int b = 1; b <= NUM_BOXES; b++)
-        for (int v = 1; v <= VALVES_PER_BOX; v++)
-            publishState(b, v, valveOn[b - 1][v - 1]);
-    publishState(0, -1, pumpOn);
+    publishAllState();
     publishHeartbeat();
     publishHwStatus();
     hwStatusDirty = false;
@@ -627,6 +692,21 @@ void loop()
         }
     }
 
+    // Retry any relay write the I2C bus rejected, until it lands. Throttled so a
+    // genuinely dead bus is not hammered at full loop speed.
+    static unsigned long lastPcfRetry = 0;
+    if ((pcfDirty[0] || pcfDirty[1]) && millis() - lastPcfRetry >= 1000)
+    {
+        lastPcfRetry = millis();
+        for (int i = 0; i < 2; i++)
+            if (pcfDirty[i] && pcfFlush(i))
+            {
+                pcfDirty[i] = false;
+                syncValvesFromShadow(i);
+                log_i("PCF[%d] write recovered - relay state applied", i);
+            }
+    }
+
     // Valve max-open safety — the last-resort dead-man's switch. Unlike the WiFi
     // and pump watchdogs below this fires even when WiFi, MQTT and the pump are
     // all healthy, so a crashed or hung Pi cannot leave a valve open forever.
@@ -661,7 +741,7 @@ void loop()
     {
         allOff();
         if (mqtt.connected())
-            publishAllOff();
+            publishAllState();
         snprintf(pcfErrMsg, sizeof(pcfErrMsg), "Pump safety stop!");
         pcfErrUntil = millis() + 5000;
         log_e("Pump safety stop: no valve ON for %lu min — all outputs off",
